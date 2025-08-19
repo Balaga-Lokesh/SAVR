@@ -1,0 +1,5 @@
+djangorestframework
+Django>=4.2
+python-dotenv
+PyMySQL
+djangorestframework

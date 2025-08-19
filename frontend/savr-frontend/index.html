@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Shopping Assistant | AI-Powered Grocery Shopping</title>
+    <meta name="description" content="Find the best deals across multiple stores with our AI-powered shopping assistant. Save up to 30% on groceries with smart cart optimization and quality analysis." />
+    <meta name="author" content="Smart Shopping Co." />
+
+    <meta property="og:title" content="Smart Shopping Assistant | AI-Powered Grocery Shopping" />
+    <meta property="og:description" content="Find the best deals across multiple stores with our AI-powered shopping assistant. Save up to 30% on groceries with smart cart optimization and quality analysis." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@lovable_dev" />
+    <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+    <style>
+      /* Theme gradients and transitions */
+      :root{
+        --bg-grad-start: #f8fafc; /* light slate */
+        --bg-grad-end: #ffffff; /* white */
+        --fg: #0f172a; /* slate-900 */
+        --muted: rgba(15,23,42,0.7);
+        --toggle-bg: rgba(255,255,255,0.85);
+        --toggle-fg: #111827;
+      }
+
+      html.dark{
+        --bg-grad-start: #0f172a; /* dark slate */
+        --bg-grad-end: #071029; /* near-black blue */
+        --fg: #e6eef8; /* light text */
+        --muted: rgba(230,238,248,0.75);
+        --toggle-bg: rgba(0,0,0,0.6);
+        --toggle-fg: #ffffff;
+      }
+
+      /* Smooth scrolling and reduced-motion support */
+      @media (prefers-reduced-motion: reduce) {
+        * { transition: none !important; animation: none !important; }
+        html { scroll-behavior: auto; }
+      }
+
+      html { scroll-behavior: smooth; }
+
+      html, body {
+        height: 100%;
+        margin: 0;
+        color: var(--fg);
+        background: linear-gradient(135deg, var(--bg-grad-start) 0%, var(--bg-grad-end) 100%);
+        transition: background 450ms ease, color 300ms ease;
+        -webkit-font-smoothing:antialiased;
+        -moz-osx-font-smoothing:grayscale;
+      }
+
+      /* Make the mounted app sit on transparent background so gradient shows through */
+      #root { min-height: 100vh; }
+
+      /* Toggle button transitions */
+      #theme-toggle{
+        transition: background 300ms ease, color 300ms ease, transform 220ms ease, box-shadow 220ms ease;
+        box-shadow: 0 6px 18px rgba(2,6,23,0.08);
+        border: 1px solid rgba(15,23,42,0.06);
+        display:flex;align-items:center;justify-content:center;
+      }
+
+      #theme-toggle:active{ transform: scale(0.96); }
+
+      /* icon inside button will slightly rotate on toggle via aria-pressed */
+      #theme-toggle svg{ display:inline-block; transition: transform 320ms ease; }
+      #theme-toggle[aria-pressed="true"] svg{ transform: rotate(20deg); }
+    </style>
+  </head>
+
+  <body>
+  <!-- Theme toggle portal root (React will render the toggle here) -->
+  <div id="theme-portal-root" style="position:fixed;top:1rem;right:1rem;z-index:9999;"></div>
+
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
