@@ -1,25 +1,26 @@
-from django.http import JsonResponse
-from rest_framework import viewsets, status
-from rest_framework.decorators import action, api_view
-from rest_framework.response import Response
-from . import models, serializers
-import json
-from django.contrib.auth.hashers import make_password, check_password
 import secrets
+import random, json, requests
+from decimal import Decimal
+from django.http import JsonResponse
+from django.db.models import Q
+from django.utils import timezone
+from django.contrib.auth.hashers import make_password, check_password
 from django.core.mail import send_mail
 from django.conf import settings
-from .models import OTPCode
-from django.utils import timezone
-from decimal import Decimal, InvalidOperation
-import json
-from django.db.models import Q
-import random
+from rest_framework import viewsets
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from .authentication import CustomTokenAuthentication
+from . import models, serializers
 
 
+# --------------------- Basic Index ---------------------
 def index(request):
     return JsonResponse({'status': 'ok', 'message': 'API is up'})
 
 
+# --------------------- Read-only ViewSets ---------------------
 class MartViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = models.Mart.objects.all()
     serializer_class = serializers.MartSerializer
@@ -35,161 +36,250 @@ class OfferViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = serializers.OfferSerializer
 
 
-@api_view(['POST'])
-def parse_shopping_list(request):
-    # Very small parser: split by commas/newlines, return items
-    text = request.data.get('text') or request.data.get('list') or ''
-    if not text:
-        return Response({'error': 'no text provided'}, status=status.HTTP_400_BAD_REQUEST)
-    items = [s.strip() for s in json.dumps(text).split(',') if s.strip()]
-    # In real implementation we'd call NLP parser
-    return Response({'items': items})
+# --------------------- Google Image Helper ---------------------
+GOOGLE_API_KEY = getattr(settings, 'GOOGLE_API_KEY', None)
+GOOGLE_CX = getattr(settings, 'GOOGLE_CX', None)
 
 
-
-@api_view(['POST'])
-def register_user(request):
-    data = request.data or {}
-    username = data.get('username')
-    email = data.get('email')
-    password = data.get('password')
-    location_lat = data.get('location_lat')
-    location_long = data.get('location_long')
-    preferences = data.get('preferences')
-    if not username or not email or not password:
-        return Response({'error': 'username, email, password required'}, status=400)
-    # If a user already exists with this email or username, attempt sign-in
-    existing = models.User.objects.filter(Q(email=email) | Q(username=username)).first()
-    if existing:
-        # verify provided password
-        if check_password(password, existing.password_hash):
-            # return existing token or create one
-            existing_token = models.UserToken.objects.filter(user=existing).first()
-            if existing_token:
-                return Response({'username': existing.username, 'token': existing_token.key})
-            token_key = secrets.token_urlsafe(48)
-            user_token = models.UserToken.objects.create(user=existing, key=token_key)
-            return Response({'username': existing.username, 'token': token_key})
-        else:
-            return Response({'error': 'user already exists; invalid credentials for sign in'}, status=400)
-
-    # Create user in users table (custom users table)
-    now = timezone.now()
-    # coerce optional numeric fields
-    lat_val = None
-    long_val = None
+def get_google_image(query: str) -> str:
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "q": query + " product",
+        "cx": GOOGLE_CX,
+        "key": GOOGLE_API_KEY,
+        "searchType": "image",
+        "num": 1,
+    }
     try:
-        if location_lat is not None and location_lat != '':
-            lat_val = Decimal(str(location_lat))
-    except (InvalidOperation, ValueError):
-        return Response({'error': 'invalid location_lat'}, status=400)
-    try:
-        if location_long is not None and location_long != '':
-            long_val = Decimal(str(location_long))
-    except (InvalidOperation, ValueError):
-        return Response({'error': 'invalid location_long'}, status=400)
-
-    prefs_val = None
-    if preferences is not None:
-        # accept dict or JSON string
-        if isinstance(preferences, str):
-            try:
-                prefs_val = json.loads(preferences)
-            except Exception:
-                # fall back to storing raw string
-                prefs_val = preferences
-        else:
-            prefs_val = preferences
-
-    user = models.User(
-        username=username,
-        email=email,
-        password_hash=make_password(password),
-        location_lat=lat_val,
-        location_long=long_val,
-        preferences=prefs_val,
-        created_at=now,
-        updated_at=now,
-    )
-    user.save()
-
-    # create token in our UserToken table
-    token_key = secrets.token_urlsafe(48)
-    user_token = models.UserToken.objects.create(user=user, key=token_key)
-    return Response({'username': username, 'token': user_token.key})
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        data = res.json()
+        return data.get("items", [{}])[0].get("link", "https://via.placeholder.com/80")
+    except:
+        return "https://via.placeholder.com/80"
 
 
+# --------------------- Products with Images ---------------------
+@api_view(['GET'])
+def products_with_images(request):
+    """Return all products with image_url (fetch from Google if missing)."""
+    products = models.Product.objects.all()
+    serializer = serializers.ProductSerializer(products, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+# --------------------- User Registration ---------------------
 @api_view(['POST'])
-def login_user(request):
-    data = request.data or {}
-    username = data.get('username')
-    password = data.get('password')
-    if not username or not password:
-        return Response({'error': 'username and password required'}, status=400)
+def register(request):
+    """Register a new user into custom `users` table."""
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
     try:
-        # allow logging in with username or email
-        user = models.User.objects.get(Q(username=username) | Q(email=username))
-    except models.User.DoesNotExist:
-        return Response({'error': 'invalid credentials'}, status=400)
-    # check password - note: password_hash field may not be compatible; treat as placeholder
-    if not check_password(password, user.password_hash):
-        return Response({'error': 'invalid credentials'}, status=400)
-    # create or reuse token in our UserToken table
-    existing = models.UserToken.objects.filter(user=user).first()
-    if existing:
-        token_key = existing.key
-    else:
-        token_key = secrets.token_urlsafe(48)
-        models.UserToken.objects.create(user=user, key=token_key)
-    return Response({'username': username, 'token': token_key})
+        data = json.loads(request.body.decode("utf-8"))
+        username = data.get("username")
+        email = data.get("email")
+        password = data.get("password")
+
+        if not (username and email and password):
+            return JsonResponse({"error": "Missing fields"}, status=400)
+
+        if models.User.objects.filter(email=email).exists():
+            return JsonResponse({"error": "Email already registered"}, status=400)
+
+        user = models.User.objects.create(
+            username=username,
+            email=email,
+            password_hash=make_password(password),  # store hashed
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+
+        return JsonResponse({"message": "User registered", "user_id": user.user_id})
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
 
 
-@api_view(['POST'])
-def optimize_basket(request):
-    # Accepts a basket {items: [...]}, returns a naive optimization placeholder
-    data = request.data or {}
-    items = data.get('items', [])
-    # Placeholder logic: return same items grouped by mart if product has mart
-    result = {'optimized': items, 'notes': 'placeholder optimization - integrate cost optimizer later'}
-    return Response(result)
-
-
-
+# --------------------- OTP: Request + Verify ---------------------
 @api_view(['POST'])
 def request_otp(request):
+    """Request OTP (for login/verification)."""
     data = request.data or {}
-    dest = data.get('destination')
+    destination = data.get('destination')  # email or phone
     purpose = data.get('purpose', 'login')
-    if not dest:
-        return Response({'error': 'destination required'}, status=400)
+
+    if not destination:
+        return Response({'error': 'destination (email/phone) required'}, status=400)
+
     code = f"{random.randint(100000, 999999)}"
-    otp = OTPCode.objects.create(destination=dest, code=code, purpose=purpose)
-    # send via email for now
-    subject = f"Your SAVR OTP code ({purpose})"
-    message = f"Your OTP code is: {code}. It expires in 5 minutes."
+    otp = models.OTPCode.objects.create(destination=destination, code=code, purpose=purpose)
+
+    subject = f"SAVR {purpose.capitalize()} OTP"
+    message = f"Your OTP is {code}. It will expire in 5 minutes."
     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@savr.local')
+
     try:
-        send_mail(subject, message, from_email, [dest])
-    except Exception:
-        # fallback: console-only (already configured by Django dev settings)
-        print(f"OTP for {dest}: {code}")
-    return Response({'sent': True})
+        send_mail(subject, message, from_email, [destination])
+    except Exception as e:
+        print(f"Email send failed: {e}, OTP: {code}")
+
+    return Response({'otp_sent': True, 'destination': destination})
 
 
 @api_view(['POST'])
 def verify_otp(request):
+    """Verify OTP for login/verification."""
     data = request.data or {}
-    dest = data.get('destination')
+    destination = data.get('destination')
     code = data.get('code')
     purpose = data.get('purpose', 'login')
-    if not dest or not code:
+
+    if not destination or not code:
         return Response({'error': 'destination and code required'}, status=400)
+
     try:
-        otp = OTPCode.objects.filter(destination=dest, purpose=purpose, code=code, used=False).latest('created_at')
-    except OTPCode.DoesNotExist:
-        return Response({'error': 'invalid code'}, status=400)
-    if not otp.is_valid():
-        return Response({'error': 'code expired or used'}, status=400)
+        otp = models.OTPCode.objects.filter(
+            destination=destination, purpose=purpose, code=code, used=False
+        ).latest('created_at')
+    except models.OTPCode.DoesNotExist:
+        return Response({'error': 'Invalid OTP code'}, status=400)
+
+    # Check if OTP expired
+    if timezone.now() > otp.expires_at:
+        return Response({'error': 'OTP expired'}, status=400)
+
     otp.used = True
     otp.save()
-    return Response({'verified': True})
+
+    user = models.User.objects.filter(Q(email=destination) | Q(username=destination)).first()
+    if not user:
+        return Response({'error': 'User not found'}, status=404)
+
+    # Create a custom token for this user
+    token_key = secrets.token_hex(32)
+    token_obj = models.UserToken.objects.create(
+        user=user,
+        key=token_key,
+        created_at=timezone.now()
+    )
+
+    return Response({
+        'verified': True,
+        'token': token_obj.key,
+        'user_id': user.user_id,
+        'username': user.username,
+    })
+
+
+# --------------------- Login with Email/Password ---------------------
+@api_view(['POST'])
+def login(request):
+    data = request.data
+    email = data.get("email")
+    password = data.get("password")
+
+    if not email or not password:
+        return JsonResponse({"error": "Email and password required"}, status=400)
+
+    try:
+        user = models.User.objects.get(email=email)
+    except models.User.DoesNotExist:
+        return JsonResponse({"error": "Invalid email or password"}, status=400)
+
+    if not check_password(password, user.password_hash):
+        return JsonResponse({"error": "Invalid email or password"}, status=400)
+
+    # Create a custom user token
+    token_key = secrets.token_hex(32)
+    token_obj = models.UserToken.objects.create(
+        user=user,
+        key=token_key,
+        created_at=timezone.now()
+    )
+
+    return JsonResponse({
+        "message": "Login successful",
+        "token": token_obj.key,
+        "user_id": user.user_id,
+        "username": user.username,
+    })
+
+
+# --------------------- Basket & Checkout ---------------------
+@api_view(['POST'])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def save_basket(request):
+    data = request.data or {}
+    items = data.get('items', [])
+    optimized_cost = data.get('optimized_cost')
+
+    basket = models.Basket.objects.create(
+        user=request.user,
+        items=items,  # JSONField
+        optimized_cost=optimized_cost,
+        created_at=timezone.now(),
+        updated_at=timezone.now()
+    )
+    return Response(serializers.BasketSerializer(basket).data)
+
+
+@api_view(['GET'])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def get_basket(request):
+    baskets = models.Basket.objects.filter(user=request.user).order_by('-created_at')
+    return Response(serializers.BasketSerializer(baskets, many=True).data)
+
+
+@api_view(['POST'])
+def optimize_basket(request):
+    items = request.data.get('items', [])
+    result = {'optimized': items, 'notes': 'placeholder - integrate real optimizer later'}
+    return Response(result)
+
+
+@api_view(['POST'])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def create_order(request):
+    data = request.data or {}
+    items = data.get('items', [])
+
+    total_cost = Decimal(0)
+    order = models.Order.objects.create(
+        user=request.user,
+        total_cost=0,
+        status='pending',
+        created_at=timezone.now(),
+        updated_at=timezone.now()
+    )
+
+    for item in items:
+        product = models.Product.objects.filter(pk=item.get('product_id')).first()
+        if product:
+            line_cost = Decimal(item.get('quantity', 1)) * product.price
+            total_cost += line_cost
+            models.OrderItem.objects.create(
+                order=order,
+                product=product,
+                mart=product.mart,
+                quantity=item.get('quantity', 1),
+                price_at_purchase=product.price
+            )
+
+    order.total_cost = total_cost
+    order.save()
+
+    return Response(serializers.OrderSerializer(order).data)
+
+
+# --------------------- Shopping List Parsing ---------------------
+@api_view(['POST'])
+def parse_shopping_list(request):
+    text = request.data.get('text')
+    if not text:
+        return Response({'error': 'text required'}, status=400)
+
+    items = [i.strip() for i in text.replace('\n', ',').split(',') if i.strip()]
+    return Response({'items': items})

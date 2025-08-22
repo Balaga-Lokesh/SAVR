@@ -1,145 +1,17 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ShoppingCart, Brain, TrendingDown, MapPin, Star, Sparkles, CheckCircle, Zap } from "lucide-react";
-import ShoppingList from "@/components/ShoppingList";
-import StoreComparison from "@/components/StoreComparison";
-import OptimizedCart from "@/components/OptimizedCart";
-import CheckoutFlow from "@/components/CheckoutFlow";
+import { useNavigate } from 'react-router-dom';
 import heroImage from "@/assets/hero-shopping.jpg";
 
-type AppState = 'landing' | 'shopping-list' | 'comparison' | 'optimized-cart' | 'checkout' | 'complete';
-
-interface ShoppingItem {
-  id: string;
-  name: string;
-  quantity: number;
-  category: string;
-}
-
 const Index = () => {
-  const [currentState, setCurrentState] = useState<AppState>('landing');
-  const [shoppingItems, setShoppingItems] = useState<ShoppingItem[]>([]);
   const navigate = useNavigate();
 
   const handleStartShopping = () => {
-  // redirect to login first
-  navigate('/login');
+    navigate('/login');
   };
-
-  const handleOptimizeList = (items: ShoppingItem[]) => {
-    setShoppingItems(items);
-    setCurrentState('comparison');
-  };
-
-  const handleStoreSelection = () => {
-    setCurrentState('optimized-cart');
-  };
-
-  const handleProceedToCheckout = () => {
-    setCurrentState('checkout');
-  };
-
-  const handleOrderComplete = () => {
-    setCurrentState('complete');
-  };
-
-  const handleStartOver = () => {
-    setCurrentState('landing');
-    setShoppingItems([]);
-  };
-
-  if (currentState === 'shopping-list') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-muted/20 to-fresh/5 p-6">
-        <div className="container mx-auto py-8">
-          <Button 
-            onClick={() => setCurrentState('landing')} 
-            variant="ghost" 
-            className="mb-6"
-          >
-            ← Back to Home
-          </Button>
-          <ShoppingList onOptimize={handleOptimizeList} />
-        </div>
-      </div>
-    );
-  }
-
-  if (currentState === 'comparison') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-muted/20 to-fresh/5 p-6">
-        <div className="container mx-auto py-8">
-          <Button 
-            onClick={() => setCurrentState('shopping-list')} 
-            variant="ghost" 
-            className="mb-6"
-          >
-            ← Back to Shopping List
-          </Button>
-          <StoreComparison offers={[]} onSelectStore={handleStoreSelection} />
-        </div>
-      </div>
-    );
-  }
-
-  if (currentState === 'optimized-cart') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-muted/20 to-fresh/5 p-6">
-        <div className="container mx-auto py-8">
-          <Button 
-            onClick={() => setCurrentState('comparison')} 
-            variant="ghost" 
-            className="mb-6"
-          >
-            ← Back to Comparison
-          </Button>
-          <OptimizedCart items={[]} onProceedToCheckout={handleProceedToCheckout} />
-        </div>
-      </div>
-    );
-  }
-
-  if (currentState === 'checkout') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-muted/20 to-fresh/5 p-6">
-        <div className="container mx-auto py-8">
-          <Button 
-            onClick={() => setCurrentState('optimized-cart')} 
-            variant="ghost" 
-            className="mb-6"
-          >
-            ← Back to Cart
-          </Button>
-          <CheckoutFlow onOrderComplete={handleOrderComplete} />
-        </div>
-      </div>
-    );
-  }
-
-  if (currentState === 'complete') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-success/5 to-fresh/10 flex items-center justify-center p-6">
-        <div className="text-center max-w-2xl">
-          <div className="w-24 h-24 bg-success/10 rounded-full flex items-center justify-center mx-auto mb-8">
-            <CheckCircle className="h-12 w-12 text-success" />
-          </div>
-          <h1 className="text-4xl font-bold text-success mb-4">Thank You!</h1>
-          <p className="text-xl text-muted-foreground mb-8">
-            Your smart shopping experience is complete. We've optimized your order for the best prices and quality!
-          </p>
-          <Button 
-            onClick={handleStartOver}
-            className="bg-gradient-primary hover:opacity-90 shadow-button text-lg px-8 py-6"
-          >
-            Start New Shopping List
-          </Button>
-        </div>
-      </div>
-    );
-  }
 
   // Landing page
   return (
