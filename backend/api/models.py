@@ -9,17 +9,19 @@ def otp_expires_at():
     return timezone.now() + timedelta(minutes=5)
 
 # ---------------------- Models ----------------------
-# Note: It's highly recommended to use Django's built-in, extensible User model
-# in the future for better security and ecosystem compatibility.
-# For now, your custom models are preserved.
 class User(models.Model):
     user_id = models.AutoField(primary_key=True)
     username = models.CharField(max_length=50, unique=True)
-    email = models.CharField(max_length=100, unique=True)
+    email = models.EmailField(max_length=254, unique=True)
     password_hash = models.CharField(max_length=255)
-    location_lat = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
-    location_long = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
+
+    address = models.TextField(null=True, blank=True)  # delivery address
+    contact_number = models.CharField(max_length=20, null=True, blank=True)
+
+    location_lat = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True, db_index=True)
+    location_long = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True, db_index=True)
     preferences = models.JSONField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -29,14 +31,12 @@ class User(models.Model):
     def __str__(self):
         return self.username
 
+
 class Admin(models.Model):
-    ROLE_CHOICES = [
-        ('main_admin', 'Main Admin'),
-        ('mart_admin', 'Mart Admin'),
-    ]
+    ROLE_CHOICES = [('main_admin', 'Main Admin'), ('mart_admin', 'Mart Admin')]
     admin_id = models.AutoField(primary_key=True)
     username = models.CharField(max_length=50, unique=True)
-    email = models.CharField(max_length=100, unique=True)
+    email = models.EmailField(max_length=254, unique=True, null=True, blank=True)
     password_hash = models.CharField(max_length=255)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     mart = models.ForeignKey('Mart', null=True, blank=True, on_delete=models.SET_NULL, db_column='mart_id', related_name='+')
@@ -49,11 +49,12 @@ class Admin(models.Model):
     def __str__(self):
         return self.username
 
+
 class Mart(models.Model):
     mart_id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=100)
-    location_lat = models.DecimalField(max_digits=10, decimal_places=6)
-    location_long = models.DecimalField(max_digits=10, decimal_places=6)
+    location_lat = models.DecimalField(max_digits=10, decimal_places=6, db_index=True)
+    location_long = models.DecimalField(max_digits=10, decimal_places=6, db_index=True)
     address = models.TextField(null=True, blank=True)
     admin = models.ForeignKey(Admin, null=True, blank=True, on_delete=models.SET_NULL, db_column='admin_id', related_name='+')
     approved = models.BooleanField(default=False)
@@ -66,31 +67,33 @@ class Mart(models.Model):
     def __str__(self):
         return self.name
 
+
 class Product(models.Model):
     CATEGORY_CHOICES = [
         ('grocery', 'Grocery'),
-        ('dairy', 'Dairy'),
         ('clothing', 'Clothing'),
         ('essential', 'Essential'),
         ('other', 'Other'),
+        ('dairy', 'Dairy'),
     ]
     product_id = models.AutoField(primary_key=True)
     mart = models.ForeignKey(Mart, on_delete=models.CASCADE, db_column='mart_id')
-    name = models.CharField(max_length=100)
+    name = models.CharField(max_length=255)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.IntegerField(default=0)
-    description = models.TextField(null=True, blank=True)
-    quality_score = models.FloatField(default=0.0)
-    image_url = models.URLField(max_length=500, null=True, blank=True)
+    description = models.TextField(blank=True, null=True)
+    quality_score = models.DecimalField(max_digits=3, decimal_places=1, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    image_url = models.CharField(max_length=255, blank=True, null=True)
 
     class Meta:
         db_table = 'products'
 
     def __str__(self):
-        return f"{self.name} @ {self.mart.name}"
+        return self.name
+
 
 class Offer(models.Model):
     offer_id = models.AutoField(primary_key=True)
@@ -110,6 +113,7 @@ class Offer(models.Model):
     def __str__(self):
         return f"Offer {self.offer_id} - {self.discount_percentage}%"
 
+
 class Review(models.Model):
     review_id = models.AutoField(primary_key=True)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, db_column='product_id')
@@ -125,6 +129,7 @@ class Review(models.Model):
     def __str__(self):
         return f"{self.user} -> {self.product}: {self.rating}"
 
+
 class Basket(models.Model):
     basket_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, db_column='user_id')
@@ -138,6 +143,7 @@ class Basket(models.Model):
 
     def __str__(self):
         return f"Basket {self.basket_id} ({self.user})"
+
 
 class Order(models.Model):
     STATUS_CHOICES = [
@@ -160,6 +166,7 @@ class Order(models.Model):
     def __str__(self):
         return f"Order {self.order_id} ({self.user})"
 
+
 class OrderItem(models.Model):
     item_id = models.AutoField(primary_key=True)
     order = models.ForeignKey(Order, on_delete=models.CASCADE, db_column='order_id')
@@ -174,10 +181,11 @@ class OrderItem(models.Model):
     def __str__(self):
         return f"{self.quantity}x {self.product}"
 
+
 class DeliveryPartner(models.Model):
     partner_id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=100)
-    email = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    email = models.EmailField(max_length=254, unique=True, null=True, blank=True)
     location_lat = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
     location_long = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
     availability = models.BooleanField(default=True)
@@ -190,6 +198,7 @@ class DeliveryPartner(models.Model):
 
     def __str__(self):
         return self.name
+
 
 class Delivery(models.Model):
     STATUS_CHOICES = [
@@ -213,6 +222,7 @@ class Delivery(models.Model):
     def __str__(self):
         return f"Delivery {self.delivery_id} ({self.status})"
 
+
 class AnalyticsLog(models.Model):
     log_id = models.AutoField(primary_key=True)
     admin = models.ForeignKey(Admin, on_delete=models.CASCADE, db_column='admin_id')
@@ -225,6 +235,7 @@ class AnalyticsLog(models.Model):
 
     def __str__(self):
         return f"Log {self.log_id} by {self.admin}"
+
 
 class OTPCode(models.Model):
     PURPOSE_CHOICES = [
@@ -244,6 +255,7 @@ class OTPCode(models.Model):
 
     def is_valid(self):
         return (not self.used) and (timezone.now() <= self.expires_at)
+
 
 class UserToken(models.Model):
     id = models.BigAutoField(primary_key=True)

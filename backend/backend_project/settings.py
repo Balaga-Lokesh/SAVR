@@ -10,7 +10,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-fallback-key-for-dev')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-# --- MODIFICATION: Secure ALLOWED_HOSTS ---
+# --- ALLOWED_HOSTS ---
 ALLOWED_HOSTS = []
 if DEBUG:
     ALLOWED_HOSTS = ['*']
@@ -18,7 +18,6 @@ else:
     hosts = os.getenv('ALLOWED_HOSTS')
     if hosts:
         ALLOWED_HOSTS = [host.strip() for host in hosts.split(',')]
-
 
 # --- INSTALLED APPS ---
 INSTALLED_APPS = [
@@ -33,7 +32,6 @@ INSTALLED_APPS = [
     'api',
 ]
 
-
 # --- MIDDLEWARE ---
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -45,7 +43,6 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
-
 
 ROOT_URLCONF = 'backend_project.urls'
 TEMPLATES = [
@@ -65,7 +62,6 @@ TEMPLATES = [
 ]
 WSGI_APPLICATION = 'backend_project.wsgi.application'
 
-
 # --- DATABASE ---
 DATABASES = {
     'default': {
@@ -82,7 +78,6 @@ DATABASES = {
     }
 }
 
-
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
@@ -90,28 +85,24 @@ AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
-
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
 USE_TZ = True
 
-
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-
 # --- REST Framework ---
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'api.authentication.CustomTokenAuthentication',  # Updated to point to authentication.py
+        'api.authentication.CustomTokenAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
 }
-
 
 # --- CORS ---
 CORS_ALLOWED_ORIGINS = [
@@ -122,8 +113,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8080",
 ]
-# CORS_ALLOW_ALL_ORIGINS = True  # Uncomment for development if needed
-
+# For quick testing you can enable:
+# CORS_ALLOW_ALL_ORIGINS = True
 
 # --- Email ---
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
@@ -134,7 +125,6 @@ EMAIL_HOST_USER = os.getenv('EMAIL_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_PASSWORD')
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
-
 # --- Google API Keys ---
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-GOOGLE_CX = os.getenv('GOOGLE_CX')
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_CX = os.getenv("GOOGLE_CX")
