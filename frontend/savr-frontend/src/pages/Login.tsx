@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useNavigate } from 'react-router-dom';
@@ -9,8 +9,7 @@ const Login = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [locationLat, setLocationLat] = useState('');
-  const [locationLong, setLocationLong] = useState('');
+  const [address, setAddress] = useState('');   // ✅ New field
   const [preferences, setPreferences] = useState('');
   const [error, setError] = useState('');
   const navigate = useNavigate();
@@ -18,22 +17,7 @@ const Login = () => {
   const rawApiBase = (import.meta.env.VITE_API_BASE as string) || "http://127.0.0.1:8000";
   const apiBase = rawApiBase.replace(/\/+$/, "");
 
-  // Auto-detect location when on signup
-  useEffect(() => {
-    if (isSignup && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setLocationLat(pos.coords.latitude.toString());
-          setLocationLong(pos.coords.longitude.toString());
-        },
-        (err) => {
-          console.warn('Location access denied:', err.message);
-        }
-      );
-    }
-  }, [isSignup]);
-
-  // Basic email validation
+  // Validate email
   const validateEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
   // LOGIN
@@ -43,21 +27,16 @@ const Login = () => {
       return;
     }
     try {
-      const res = await fetch(`${apiBase}/api/v1/login/`, {
+      const res = await fetch(`${apiBase}/api/v1/auth/login/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
 
-      let data: any = {};
-      try { data = await res.json(); } catch {}
+      const data = await res.json().catch(() => ({}));
 
       if (res.ok) {
-        // Store token locally
-        if (data.token) {
-          localStorage.setItem("authToken", data.token);
-        }
-        // Proceed with OTP step
+        if (data.token) localStorage.setItem("authToken", data.token);
         await requestOTP(email);
       } else {
         setError(data?.error || "Login failed");
@@ -67,10 +46,10 @@ const Login = () => {
     }
   };
 
-  // Request OTP after successful login
+  // Request OTP after login
   const requestOTP = async (destination: string) => {
     try {
-      const res = await fetch(`${apiBase}/api/v1/request-otp/`, {
+      const res = await fetch(`${apiBase}/api/v1/auth/request-otp/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ destination, purpose: 'login' }),
@@ -100,10 +79,14 @@ const Login = () => {
       setError('Passwords do not match');
       return;
     }
+    if (!address) {
+      setError('Address is required');
+      return;
+    }
+
     try {
-      const payload: any = { username, email, password };
-      if (locationLat) payload.location_lat = parseFloat(locationLat);
-      if (locationLong) payload.location_long = parseFloat(locationLong);
+      const payload: any = { username, email, password, address }; // ✅ Send address
+      
       if (preferences) {
         try {
           JSON.parse(preferences);
@@ -114,12 +97,13 @@ const Login = () => {
         }
       }
 
-      const res = await fetch(`${apiBase}/api/v1/register/`, {
+      const res = await fetch(`${apiBase}/api/v1/auth/register/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+
       if (res.ok) {
         setError('');
         alert('Registration successful! Please sign in.');
@@ -129,6 +113,7 @@ const Login = () => {
         setEmail('');
         setUsername('');
         setPreferences('');
+        setAddress('');
       } else {
         setError(data.error || 'Registration failed');
       }
@@ -145,27 +130,14 @@ const Login = () => {
         </h2>
         {error && <p className="text-destructive mb-4">{error}</p>}
 
-        {isSignup && (
-          <label className="block mb-3">
-            <div className="text-sm mb-1">Email</div>
-            <Input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter your email"
-            />
-          </label>
-        )}
-
-        {!isSignup && (
-          <label className="block mb-3">
-            <div className="text-sm mb-1">Email</div>
-            <Input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter your email"
-            />
-          </label>
-        )}
+        <label className="block mb-3">
+          <div className="text-sm mb-1">Email</div>
+          <Input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Enter your email"
+          />
+        </label>
 
         <label className="block mb-3">
           <div className="text-sm mb-1">Password</div>
@@ -198,13 +170,16 @@ const Login = () => {
               />
             </label>
 
-            <div className="text-sm text-muted-foreground mb-3">
-              {locationLat && locationLong ? (
-                <p>📍 Location detected: {locationLat}, {locationLong}</p>
-              ) : (
-                <p>Detecting your location...</p>
-              )}
-            </div>
+            {/* ✅ Address input */}
+            <label className="block mb-3">
+              <div className="text-sm mb-1">Delivery Address</div>
+              <textarea
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                className="w-full rounded-md border p-2"
+                placeholder="Enter your delivery address"
+              />
+            </label>
 
             <label className="block mb-3">
               <div className="text-sm mb-1">Preferences (JSON)</div>

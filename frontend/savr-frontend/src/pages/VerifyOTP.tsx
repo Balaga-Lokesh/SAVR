@@ -11,44 +11,43 @@ const VerifyOTP = () => {
   const dest = sessionStorage.getItem('otp_dest') || '';
 
   const handleVerify = async () => {
-  if (!code) {
-    setError('Please enter the OTP code');
-    return;
-  }
-  setLoading(true);
-  setError('');
-  try {
-    const apiBase = (import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8000';
-    const res = await fetch(`${apiBase}/api/v1/verify-otp/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ destination: dest, code })
-    });
-
-    let data;
-    try {
-      data = await res.json();
-    } catch (jsonErr) {
-      console.error('Failed to parse JSON:', jsonErr);
-      setError(`Server error: ${res.statusText}`);
+    if (!code) {
+      setError('Please enter the OTP code');
       return;
     }
+    setLoading(true);
+    setError('');
+    try {
+      const apiBase = (import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8000';
+      const res = await fetch(`${apiBase}/api/v1/auth/verify-otp/`, {  // ✅ Corrected URL
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ destination: dest, code })
+      });
 
-    if (res.ok) {
-      localStorage.setItem('token', data.token || 'authenticated');
-      navigate('/shopping-list');
-    } else {
-      console.error('Server returned error:', data);
-      setError(data.error || 'Invalid code');
+      let data;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        console.error('Failed to parse JSON:', jsonErr);
+        setError(`Server error: ${res.statusText}`);
+        return;
+      }
+
+      if (res.ok) {
+        localStorage.setItem('token', data.token || 'authenticated');
+        navigate('/shopping-list');
+      } else {
+        console.error('Server returned error:', data);
+        setError(data.error || 'Invalid code');
+      }
+    } catch (e) {
+      console.error('Fetch failed:', e);
+      setError('Network error. Check backend server or CORS.');
+    } finally {
+      setLoading(false);
     }
-  } catch (e) {
-    console.error('Fetch failed:', e);
-    setError('Network error. Check backend server or CORS.');
-  } finally {
-    setLoading(false);
-  }
-};
-
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background via-muted/20 to-fresh/5 p-6">
