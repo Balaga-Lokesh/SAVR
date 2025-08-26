@@ -1,13 +1,19 @@
-import React, { useState } from 'react';
+import React, { useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ShoppingCart, Brain, TrendingDown, MapPin, Star, Sparkles, CheckCircle, Zap } from "lucide-react";
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import heroImage from "@/assets/hero-shopping.jpg";
 
 const Index = () => {
   const navigate = useNavigate();
+
+  // Skip landing if already authenticated
+  useEffect(() => {
+    const token = localStorage.getItem('authToken');
+    if (token) navigate('/products', { replace: true });
+  }, [navigate]);
 
   const handleStartShopping = () => {
     navigate('/login');
@@ -34,20 +40,24 @@ const Index = () => {
             <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto leading-relaxed">
               Find the best deals across multiple stores, optimize your cart with AI, and get fresh groceries delivered to your door.
             </p>
-            <Button 
-              onClick={handleStartShopping}
+
+            {/* Button wrapped with Link for accessibility/SEO */}
+            <Button
+              asChild
               className="bg-gradient-primary hover:opacity-90 shadow-button text-lg px-12 py-6 rounded-xl"
             >
-              <ShoppingCart className="mr-3 h-6 w-6" />
-              Start Smart Shopping
+              <Link to="/login">
+                <ShoppingCart className="mr-3 h-6 w-6" />
+                Start Smart Shopping
+              </Link>
             </Button>
           </div>
 
           <div className="mt-16 relative">
             <div className="absolute inset-0 bg-gradient-to-t from-background via-transparent to-transparent z-10"></div>
-            <img 
-              src={heroImage} 
-              alt="Smart shopping with fresh groceries" 
+            <img
+              src={heroImage}
+              alt="Smart shopping with fresh groceries"
               className="mx-auto rounded-2xl shadow-card max-w-4xl w-full"
             />
           </div>
@@ -204,12 +214,16 @@ const Index = () => {
               <p className="text-xl opacity-90 mb-8 max-w-2xl mx-auto">
                 Join thousands of smart shoppers who save time and money with our AI-powered shopping assistant
               </p>
-              <Button 
-                onClick={handleStartShopping}
+
+              {/* Button wrapped with Link */}
+              <Button
+                asChild
                 className="bg-white text-fresh hover:bg-white/90 shadow-button text-lg px-12 py-6 rounded-xl"
               >
-                <Sparkles className="mr-3 h-6 w-6" />
-                Get Started Now
+                <Link to="/login">
+                  <Sparkles className="mr-3 h-6 w-6" />
+                  Get Started Now
+                </Link>
               </Button>
             </CardContent>
           </Card>

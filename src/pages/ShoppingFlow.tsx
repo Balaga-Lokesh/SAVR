@@ -21,6 +21,7 @@ interface ShoppingItem {
 const Index = () => {
   const [currentState, setCurrentState] = useState<AppState>('landing');
   const [shoppingItems, setShoppingItems] = useState<ShoppingItem[]>([]);
+  const [selectedPlan, setSelectedPlan] = useState<any | null>(null);
 
   const handleStartShopping = () => {
     setCurrentState('shopping-list');
@@ -35,7 +36,8 @@ const Index = () => {
     setCurrentState('optimized-cart');
   };
 
-  const handleProceedToCheckout = () => {
+  const handleProceedToCheckout = (plan?: any) => {
+    if (plan) setSelectedPlan(plan);
     setCurrentState('checkout');
   };
 
@@ -93,7 +95,7 @@ const Index = () => {
           >
             ← Back to Comparison
           </Button>
-          <OptimizedCart items={[]} onProceedToCheckout={handleProceedToCheckout} />
+          <OptimizedCart items={shoppingItems.map(si => ({ product_id: si.id, quantity: si.quantity }))} onProceedToCheckout={handleProceedToCheckout} />
         </div>
       </div>
     );
@@ -110,7 +112,7 @@ const Index = () => {
           >
             ← Back to Cart
           </Button>
-          <CheckoutFlow onOrderComplete={handleOrderComplete} />
+          <CheckoutFlow onOrderComplete={handleOrderComplete} selectedPlan={selectedPlan} />
         </div>
       </div>
     );

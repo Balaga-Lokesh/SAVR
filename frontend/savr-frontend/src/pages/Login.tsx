@@ -5,54 +5,73 @@ import { useNavigate } from 'react-router-dom';
 
 const Login = () => {
   const [isSignup, setIsSignup] = useState(false);
-  const [username, setUsername] = useState('');
+
+  // Shared
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [address, setAddress] = useState('');   // ✅ New field
-  const [preferences, setPreferences] = useState('');
+
+  // Signup-only
+  const [username, setUsername] = useState('');
+  const [contactNumber, setContactNumber] = useState('');
+
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
   const navigate = useNavigate();
 
-  const rawApiBase = (import.meta.env.VITE_API_BASE as string) || "http://127.0.0.1:8000";
-  const apiBase = rawApiBase.replace(/\/+$/, "");
+  const rawApiBase = (import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8000';
+  const apiBase = rawApiBase.replace(/\/+$/, '');
 
-  // Validate email
-  const validateEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const validateEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  const validatePhone = (v: string) => /^[0-9]{7,15}$/.test(v.replace(/\D/g, ''));
 
-  // LOGIN
+  // LOGIN → then request OTP → go to /verify-otp
   const handleLogin = async () => {
+    setError('');
     if (!email || !password) {
-      setError("Email and password are required");
+      setError('Email and password are required');
       return;
     }
+    setLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/v1/auth/login/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-
       const data = await res.json().catch(() => ({}));
-
-      if (res.ok) {
-        if (data.token) localStorage.setItem("authToken", data.token);
-        await requestOTP(email);
-      } else {
-        setError(data?.error || "Login failed");
+      if (!res.ok) {
+        setError(data?.error || 'Login failed');
+        return;
       }
-    } catch (e) {
-      setError("Network error");
+
+      // if backend returns a temp token for OTP step, keep it in sessionStorage
+      if (data?.temp_token) {
+        sessionStorage.setItem('temp_token', data.temp_token);
+      }
+
+      // proceed to OTP
+      await requestOTP(email);
+    } catch {
+      setError('Network error');
+    } finally {
+      setLoading(false);
     }
   };
 
   // Request OTP after login
   const requestOTP = async (destination: string) => {
     try {
+      const body: Record<string, string> = { destination, purpose: 'login' };
+      const temp = sessionStorage.getItem('temp_token');
+      if (temp) {
+        body['temp_token'] = temp;
+      }
+
       const res = await fetch(`${apiBase}/api/v1/auth/request-otp/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ destination, purpose: 'login' }),
+        body: JSON.stringify(body),
       });
       if (res.ok) {
         sessionStorage.setItem('otp_dest', destination);
@@ -60,42 +79,35 @@ const Login = () => {
       } else {
         setError('Failed to send OTP');
       }
-    } catch (e) {
+    } catch {
       setError('Network error');
     }
   };
 
-  // REGISTER
+  // SIGNUP → success popup → switch to Sign in
   const handleRegister = async () => {
-    if (!username || !email || !password) {
-      setError('Username, email, and password are required');
+    setError('');
+    if (!username || !email || !password || !contactNumber) {
+      setError('All fields are required');
       return;
     }
     if (!validateEmail(email)) {
       setError('Invalid email format');
       return;
     }
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
-      return;
-    }
-    if (!address) {
-      setError('Address is required');
+    if (!validatePhone(contactNumber)) {
+      setError('Enter a valid contact number (digits only, 7–15)');
       return;
     }
 
+    setLoading(true);
     try {
-      const payload: any = { username, email, password, address }; // ✅ Send address
-      
-      if (preferences) {
-        try {
-          JSON.parse(preferences);
-          payload.preferences = preferences;
-        } catch {
-          setError('Invalid JSON format for preferences');
-          return;
-        }
-      }
+      const payload = {
+        username,
+        email,
+        password,
+        contact_number: contactNumber,
+      };
 
       const res = await fetch(`${apiBase}/api/v1/auth/register/`, {
         method: 'POST',
@@ -105,20 +117,19 @@ const Login = () => {
       const data = await res.json().catch(() => ({}));
 
       if (res.ok) {
-        setError('');
+        setUsername('');
+        setEmail('');
+        setPassword('');
+        setContactNumber('');
         alert('Registration successful! Please sign in.');
         setIsSignup(false);
-        setPassword('');
-        setConfirmPassword('');
-        setEmail('');
-        setUsername('');
-        setPreferences('');
-        setAddress('');
       } else {
-        setError(data.error || 'Registration failed');
+        setError(data?.error || 'Registration failed');
       }
-    } catch (e) {
+    } catch {
       setError('Network error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -128,27 +139,31 @@ const Login = () => {
         <h2 className="text-2xl font-bold mb-6">
           {isSignup ? 'Create an account' : 'Log in to SAVR'}
         </h2>
+
         {error && <p className="text-destructive mb-4">{error}</p>}
 
+        {/* Email */}
         <label className="block mb-3">
           <div className="text-sm mb-1">Email</div>
           <Input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="Enter your email"
+            placeholder="you@example.com"
           />
         </label>
 
+        {/* Password */}
         <label className="block mb-3">
           <div className="text-sm mb-1">Password</div>
           <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="Enter your password"
+            placeholder="••••••••"
           />
         </label>
 
+        {/* Signup-only fields */}
         {isSignup && (
           <>
             <label className="block mb-3">
@@ -156,38 +171,16 @@ const Login = () => {
               <Input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Enter your username"
+                placeholder="your_nickname"
               />
             </label>
 
-            <label className="block mb-3">
-              <div className="text-sm mb-1">Confirm password</div>
+            <label className="block mb-5">
+              <div className="text-sm mb-1">Contact number</div>
               <Input
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="Confirm your password"
-              />
-            </label>
-
-            {/* ✅ Address input */}
-            <label className="block mb-3">
-              <div className="text-sm mb-1">Delivery Address</div>
-              <textarea
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                className="w-full rounded-md border p-2"
-                placeholder="Enter your delivery address"
-              />
-            </label>
-
-            <label className="block mb-3">
-              <div className="text-sm mb-1">Preferences (JSON)</div>
-              <textarea
-                value={preferences}
-                onChange={(e) => setPreferences(e.target.value)}
-                className="w-full rounded-md border p-2"
-                placeholder='{"veg": true}'
+                value={contactNumber}
+                onChange={(e) => setContactNumber(e.target.value)}
+                placeholder="e.g., 9876543210"
               />
             </label>
           </>
@@ -195,9 +188,13 @@ const Login = () => {
 
         <div className="flex gap-3">
           {!isSignup ? (
-            <Button onClick={handleLogin} className="flex-1">Sign in</Button>
+            <Button onClick={handleLogin} className="flex-1" disabled={loading}>
+              {loading ? 'Signing in…' : 'Sign in'}
+            </Button>
           ) : (
-            <Button onClick={handleRegister} className="flex-1">Sign up</Button>
+            <Button onClick={handleRegister} className="flex-1" disabled={loading}>
+              {loading ? 'Creating…' : 'Sign up'}
+            </Button>
           )}
           <Button
             variant="ghost"

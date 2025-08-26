@@ -128,3 +128,5 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 # --- Google API Keys ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CX = os.getenv("GOOGLE_CX")
+
+TOKEN_TTL_MINUTES = int(os.getenv("TOKEN_TTL_MINUTES", "1440"))  # 24h

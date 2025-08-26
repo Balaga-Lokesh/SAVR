@@ -1,9 +1,8 @@
 from rest_framework import serializers
 from .models import (
     User, Admin, Mart, Product, Offer, Review, Basket,
-    Order, OrderItem, DeliveryPartner, Delivery, AnalyticsLog
+    Order, OrderItem, DeliveryPartner, Delivery, AnalyticsLog, Address
 )
-from .utils import fetch_product_image  # if you have this helper
 
 # -------------------- User --------------------
 class UserSerializer(serializers.ModelSerializer):
@@ -15,6 +14,12 @@ class UserSerializer(serializers.ModelSerializer):
             "location_lat", "location_long",
             "preferences", "created_at", "updated_at",
         ]
+
+# -------------------- Address --------------------
+class AddressSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Address
+        fields = "__all__"
 
 # -------------------- Admin --------------------
 class AdminSerializer(serializers.ModelSerializer):
@@ -37,25 +42,13 @@ class ProductSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             "product_id", "name", "category", "price",
-            "quality_score", "mart_name", "image_url",
+            "quality_score", "stock", "mart_name", "image_url",
         ]
 
     def get_image_url(self, obj):
-        if obj.image_url:
-            return obj.image_url
-
-        # Optional: use your Google fetch helper if available
-        try:
-            img_url = fetch_product_image(obj.name)
-        except Exception:
-            img_url = None
-
-        if img_url:
-            obj.image_url = img_url
-            obj.save(update_fields=["image_url"])
-            return img_url
-
-        return "https://via.placeholder.com/80"
+        # views.ensure_product_image already tries to populate this;
+        # fall back to a tiny placeholder if still empty
+        return obj.image_url or "https://via.placeholder.com/80"
 
 # -------------------- Review --------------------
 class ReviewSerializer(serializers.ModelSerializer):

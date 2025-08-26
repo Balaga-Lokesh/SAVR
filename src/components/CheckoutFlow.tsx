@@ -9,9 +9,10 @@ import { CreditCard, MapPin, Clock, CheckCircle, Truck, User } from "lucide-reac
 
 interface CheckoutFlowProps {
   onOrderComplete: () => void;
+  selectedPlan?: any;
 }
 
-const CheckoutFlow: React.FC<CheckoutFlowProps> = ({ onOrderComplete }) => {
+const CheckoutFlow: React.FC<CheckoutFlowProps> = ({ onOrderComplete, selectedPlan }) => {
   const [step, setStep] = useState<'details' | 'payment' | 'confirmation'>('details');
   const [formData, setFormData] = useState({
     name: '',

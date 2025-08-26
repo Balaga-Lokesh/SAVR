@@ -1,3 +1,5 @@
+# views.py
+
 import secrets
 import random
 import math
@@ -19,6 +21,7 @@ from rest_framework.decorators import (
 )
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django.db import transaction
 
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
@@ -42,19 +45,6 @@ class OfferViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = serializers.OfferSerializer
 
 
-# --------------------- Product images (simple placeholder) ---------------------
-def get_google_image(query: str) -> str:
-    # Replace with a real provider if needed
-    return f"https://via.placeholder.com/150?text={query}"
-
-
-def ensure_product_image(product: models.Product) -> models.Product:
-    if not product.image_url:
-        product.image_url = get_google_image(product.name)
-        product.save(update_fields=["image_url"])
-    return product
-
-
 class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = models.Product.objects.all()
     serializer_class = serializers.ProductSerializer
@@ -73,6 +63,18 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(serializer.data)
 
 
+# --------------------- Product images ---------------------
+def get_google_image(query: str) -> str:
+    return f"https://via.placeholder.com/150?text={query}"
+
+
+def ensure_product_image(product: models.Product) -> models.Product:
+    if not product.image_url:
+        product.image_url = get_google_image(product.name)
+        product.save(update_fields=["image_url"])
+    return product
+
+
 @api_view(["GET"])
 def products_with_images(request):
     products = list(models.Product.objects.all())
@@ -82,14 +84,10 @@ def products_with_images(request):
     return Response(data)
 
 
-# --------------------- Geocoding & Delivery helpers ---------------------
+# --------------------- Geocoding helpers ---------------------
 geolocator = Nominatim(user_agent="savr_backend")
 
-
 def get_lat_long_from_address(address: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
-    """
-    Geocode with Nominatim; returns (Decimal lat, Decimal long) or (None, None).
-    """
     try:
         location = geolocator.geocode(address, timeout=10)
         if location:
@@ -99,25 +97,32 @@ def get_lat_long_from_address(address: str) -> Tuple[Optional[Decimal], Optional
     return None, None
 
 
-def calculate_delivery_charge(distance_km: float) -> int:
-    """
-    Example policy: base ₹30, plus ₹10 per km (rounded up).
-    Feel free to replace with your own pricing logic.
-    """
-    base = 30
-    per_km = 10
-    return max(base, math.ceil(distance_km * per_km))
-
-
 def distance_km_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Return geodesic distance in km (float)."""
     return geodesic((lat1, lon1), (lat2, lon2)).km
 
 
-def marts_with_distances_to(address_lat: Decimal, address_long: Decimal, marts: Iterable[models.Mart]) -> List[Dict]:
+def eta_minutes_from_distance(distance_km: float) -> int:
+    """Very simple ETA: 20 km/h average → 3 min/km."""
+    return int(math.ceil((distance_km / 20.0) * 60.0))
+
+
+def calculate_delivery_charge(distance_km: float, total_weight_kg: float) -> int:
+    """
+    Pricing rule:
+      - ₹5 per km
+      - ₹5 per kg
+      - no base
+    """
+    distance_component = 5.0 * max(0.0, float(distance_km or 0.0))
+    weight_component = 5.0 * max(0.0, float(total_weight_kg or 0.0))
+    return int(math.ceil(distance_component + weight_component))
+
+
+def marts_with_distances_to(address_lat: Decimal, address_long: Decimal, marts: Iterable[models.Mart],
+                            weight_kg: float = 1.0) -> List[Dict]:
     """
     For given address coordinates, compute distance to each mart and return list of dicts:
-    { mart, distance_km, delivery_charge } sorted by distance.
+    { mart_id, mart_name, mart_lat, mart_long, distance_km, eta_min, delivery_charge } sorted by distance.
     """
     result = []
     for m in marts:
@@ -127,13 +132,14 @@ def marts_with_distances_to(address_lat: Decimal, address_long: Decimal, marts: 
         except Exception:
             continue
         dist = distance_km_between(float(address_lat), float(address_long), mart_lat, mart_long)
-        charge = calculate_delivery_charge(dist)
+        charge = calculate_delivery_charge(dist, weight_kg)
         result.append({
             "mart_id": m.mart_id,
             "mart_name": m.name,
             "mart_lat": mart_lat,
             "mart_long": mart_long,
             "distance_km": round(dist, 3),
+            "eta_min": eta_minutes_from_distance(dist),
             "delivery_charge": charge,
         })
     result.sort(key=lambda x: x["distance_km"])
@@ -143,48 +149,52 @@ def marts_with_distances_to(address_lat: Decimal, address_long: Decimal, marts: 
 # --------------------- Auth & User ---------------------
 @api_view(["POST"])
 def register(request):
-    """
-    Register a new user. Auto-geocodes address to lat/long (if provided).
-    """
     data = request.data or {}
     username = data.get("username")
     email = data.get("email")
     password = data.get("password")
-    address = data.get("address")
     contact_number = data.get("contact_number")
 
-    if not (username and email and password and address and contact_number):
+    if not (username and email and password and contact_number):
         return JsonResponse({"error": "Missing fields"}, status=400)
-
     if models.User.objects.filter(email=email).exists():
         return JsonResponse({"error": "Email already registered"}, status=400)
     if models.User.objects.filter(username=username).exists():
         return JsonResponse({"error": "Username already taken"}, status=400)
 
-    lat, lng = get_lat_long_from_address(address)
-
     user = models.User.objects.create(
         username=username,
         email=email,
         password_hash=make_password(password),
-        address=address if hasattr(models.User, "address") else None,
-        contact_number=contact_number if hasattr(models.User, "contact_number") else None,
-        location_lat=lat,
-        location_long=lng,
+        contact_number=contact_number,
     )
+    return JsonResponse({
+        "message": "User registered",
+        "user_id": user.user_id,
+        "username": user.username,
+        "email": user.email,
+        "contact_number": user.contact_number,
+    }, status=201)
 
-    return JsonResponse(
-        {
-            "message": "User registered",
-            "user_id": user.user_id,
-            "username": user.username,
-            "email": user.email,
-            "address": getattr(user, "address", None),
-            "contact_number": getattr(user, "contact_number", None),
-            "location_lat": str(user.location_lat) if user.location_lat else None,
-            "location_long": str(user.location_long) if user.location_long else None,
-        }
-    )
+
+@api_view(["POST"])
+def login(request):
+    data = request.data or {}
+    email = data.get("email")
+    password = data.get("password")
+
+    if not email or not password:
+        return JsonResponse({"error": "Email and password required"}, status=400)
+
+    try:
+        user = models.User.objects.get(email=email)
+    except models.User.DoesNotExist:
+        return JsonResponse({"error": "Invalid email or password"}, status=400)
+
+    if not check_password(password, user.password_hash):
+        return JsonResponse({"error": "Invalid email or password"}, status=400)
+
+    return JsonResponse({"message": "Login OK. Proceed to OTP.", "otp_destination": email}, status=200)
 
 
 @api_view(["POST"])
@@ -239,150 +249,168 @@ def verify_otp(request):
     if not user:
         return Response({"error": "User not found"}, status=404)
 
-    token_key = secrets.token_hex(32)
-    token_obj = models.UserToken.objects.create(user=user, key=token_key)
-
-    return Response(
-        {
-            "verified": True,
-            "token": token_obj.key,
-            "user_id": user.user_id,
-            "username": user.username,
-        }
-    )
-
-
-@api_view(["POST"])
-def login(request):
-    data = request.data or {}
-    email = data.get("email")
-    password = data.get("password")
-
-    if not email or not password:
-        return JsonResponse({"error": "Email and password required"}, status=400)
-
-    try:
-        user = models.User.objects.get(email=email)
-    except models.User.DoesNotExist:
-        return JsonResponse({"error": "Invalid email or password"}, status=400)
-
-    if not check_password(password, user.password_hash):
-        return JsonResponse({"error": "Invalid email or password"}, status=400)
-
-    token_key = secrets.token_hex(32)
-    token_obj = models.UserToken.objects.create(user=user, key=token_key)
-
-    return JsonResponse(
-        {
-            "message": "Login successful",
-            "token": token_obj.key,
-            "user_id": user.user_id,
-            "username": user.username,
-        }
-    )
-
-
-# --------------------- Nearby marts endpoint ---------------------
-@api_view(["POST"])
-def nearby_marts(request):
-    """
-    Find nearby marts for any delivery address.
-
-    Body:
-      {
-        "address": "delivery address string",   # required
-        "radius_km": 5.0                        # optional - filter within radius
-      }
-
-    Response:
-      {
-        "address": "...",
-        "address_lat": ...,
-        "address_long": ...,
-        "marts": [
-           { mart_id, mart_name, mart_lat, mart_long, distance_km, delivery_charge }, ...
-        ]
-      }
-    """
-    data = request.data or {}
-    address = data.get("address")
-    radius_km = data.get("radius_km", None)
-
-    if not address:
-        return Response({"error": "address is required"}, status=400)
-
-    lat, lng = get_lat_long_from_address(address)
-    if not (lat and lng):
-        return Response({"error": "Could not geocode address"}, status=400)
-
-    marts = models.Mart.objects.filter(approved=True)  # only approved marts
-    marts_list = marts_with_distances_to(lat, lng, marts)
-
-    if radius_km is not None:
-        try:
-            r = float(radius_km)
-            marts_list = [m for m in marts_list if m["distance_km"] <= r]
-        except Exception:
-            pass
+    token_value = secrets.token_hex(32)
+    token_obj = models.UserToken.objects.create(user=user, token_key=token_value)
 
     return Response({
-        "address": address,
-        "address_lat": float(lat),
-        "address_long": float(lng),
-        "marts": marts_list
+        "verified": True,
+        "token": token_obj.token_key,
+        "user_id": user.user_id,
+        "username": user.username,
     })
 
 
-# --------------------- Delivery quote (single mart) ---------------------
+# ---------- NEW: auth/me ----------
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def me(request):
+    user = request.user
+    default_addr = (
+        models.Address.objects.filter(user=user, is_default=True).first()
+        or models.Address.objects.filter(user=user).order_by("-updated_at").first()
+    )
+    addr_payload = None
+    if default_addr:
+        addr_payload = {
+            "id": default_addr.address_id,
+            "label": default_addr.label,
+            "line1": default_addr.line1,
+            "line2": default_addr.line2,
+            "city": default_addr.city,
+            "state": default_addr.state,
+            "pincode": default_addr.pincode,
+            "is_default": default_addr.is_default,
+            "lat": float(default_addr.location_lat) if default_addr.location_lat else None,
+            "long": float(default_addr.location_long) if default_addr.location_long else None,
+        }
+    return Response({
+        "user_id": user.user_id,
+        "username": user.username,
+        "email": user.email,
+        "contact_number": user.contact_number,
+        "default_address": addr_payload,
+    })
+
+
+# --------------------- Address Management ---------------------
+@api_view(["GET", "POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def addresses(request):
+    user = request.user
+
+    if request.method == "GET":
+        addrs = models.Address.objects.filter(user=user).order_by("-is_default", "-updated_at")
+        return Response(serializers.AddressSerializer(addrs, many=True).data)
+
+    # POST
+    data = request.data or {}
+    # Accept either a textual address (line1) or explicit coordinates from client
+    if not data.get("line1") and not (data.get("location_lat") and data.get("location_long")):
+        return Response({"error": "line1 or location_lat/location_long is required"}, status=400)
+
+    # Prefer client-supplied coords when present (skip server geocoding)
+    lat = None
+    lng = None
+    if data.get("location_lat") is not None and data.get("location_long") is not None:
+        try:
+            lat = data.get("location_lat")
+            lng = data.get("location_long")
+        except Exception:
+            lat, lng = None, None
+
+    # If we don't have coords yet, try geocoding the assembled address
+    if lat is None or lng is None:
+        full = ", ".join(filter(None, [
+            data.get("line1"), data.get("line2"),
+            data.get("city") or "Visakhapatnam",
+            data.get("state") or "Andhra Pradesh",
+            data.get("pincode"),
+        ]))
+        if full:
+            lat, lng = get_lat_long_from_address(full)
+
+    addr = models.Address.objects.create(
+        user=user,
+        label=data.get("label"),
+        contact_name=data.get("contact_name"),
+        contact_phone=data.get("contact_phone"),
+        line1=data.get("line1") or '',
+        line2=data.get("line2"),
+        city=data.get("city", "Visakhapatnam"),
+        state=data.get("state", "Andhra Pradesh"),
+        pincode=data.get("pincode"),
+        location_lat=lat,
+        location_long=lng,
+        is_default=bool(data.get("is_default", False)),
+        instructions=data.get("instructions"),
+    )
+    # ensure only one default
+    if addr.is_default or models.Address.objects.filter(user=user).count() == 1:
+        models.Address.objects.filter(user=user).exclude(pk=addr.pk).update(is_default=False)
+        addr.is_default = True
+        addr.save(update_fields=["is_default"])
+
+    return Response(serializers.AddressSerializer(addr).data, status=201)
+
+
+@api_view(["PUT", "DELETE"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def address_detail(request, address_id):
+    try:
+        addr = models.Address.objects.get(pk=address_id, user=request.user)
+    except models.Address.DoesNotExist:
+        return Response({"error": "Address not found"}, status=404)
+
+    if request.method == "DELETE":
+        was_default = addr.is_default
+        addr.delete()
+        if was_default:
+            nxt = models.Address.objects.filter(user=request.user).order_by("-updated_at").first()
+            if nxt:
+                nxt.is_default = True
+                nxt.save(update_fields=["is_default"])
+        return Response({"deleted": True})
+
+    # PUT
+    data = request.data or {}
+    for f in ["label","contact_name","contact_phone","line1","line2","city","state","pincode","instructions","is_default"]:
+        if f in data:
+            setattr(addr, f, data[f])
+
+    if any(k in data for k in ["line1","line2","city","state","pincode"]):
+        full = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
+        lat, lng = get_lat_long_from_address(full) if full else (None, None)
+        addr.location_lat, addr.location_long = lat, lng
+
+    addr.save()
+
+    if data.get("is_default"):
+        models.Address.objects.filter(user=request.user).exclude(pk=addr.pk).update(is_default=False)
+
+    return Response(serializers.AddressSerializer(addr).data)
+
+
 @api_view(["POST"])
 @authentication_classes([CustomTokenAuthentication])
 @permission_classes([IsAuthenticated])
-def delivery_quote(request):
-    """
-    Quote delivery from a specific mart to the provided delivery address
-    (or user's saved address if authenticated user and no override provided).
-    Body:
-      { "mart_id": <int>, "address": "optional override address" }
-    """
-    data = request.data or {}
-    mart_id = data.get("mart_id")
-    override_address = data.get("address")
-
-    if not mart_id:
-        return Response({"error": "mart_id is required"}, status=400)
-
+def set_default_address(request, address_id):
+    user = request.user
     try:
-        mart = models.Mart.objects.get(pk=mart_id)
-    except models.Mart.DoesNotExist:
-        return Response({"error": "Mart not found"}, status=404)
+        addr = models.Address.objects.get(pk=address_id, user=user)
+    except models.Address.DoesNotExist:
+        return Response({"error": "Address not found"}, status=404)
 
-    # Determine delivery address coordinates
-    if override_address:
-        lat, lng = get_lat_long_from_address(override_address)
-        used_address = override_address
-    else:
-        # try use user's saved address
-        user_lat = getattr(request.user, "location_lat", None)
-        user_long = getattr(request.user, "location_long", None)
-        used_address = getattr(request.user, "address", None)
-        lat, lng = (user_lat, user_long)
+    models.Address.objects.filter(user=user).update(is_default=False)
+    addr.is_default = True
+    addr.save()
 
-    if not (lat and lng):
-        return Response({"error": "Delivery address unavailable; provide address"}, status=400)
-
-    distance_km = distance_km_between(float(lat), float(lng), float(mart.location_lat), float(mart.location_long))
-    delivery_charge = calculate_delivery_charge(distance_km)
-
-    return Response({
-        "mart_id": mart.mart_id,
-        "mart_name": mart.name,
-        "distance_km": round(distance_km, 3),
-        "delivery_charge": delivery_charge,
-        "used_address": used_address,
-    })
+    return Response({"message": "Default address set"})
 
 
-# --------------------- Basket & Orders ---------------------
+# --------------------- Basket & Optimizer ---------------------
 @api_view(["GET", "POST"])
 @authentication_classes([CustomTokenAuthentication])
 @permission_classes([IsAuthenticated])
@@ -400,64 +428,330 @@ def basket_view(request):
     return Response(serializers.BasketSerializer(basket).data, status=201)
 
 
-@api_view(["POST"])
-def optimize_basket(request):
-    items = request.data.get("items", [])
-    return Response({"optimized": items, "notes": "placeholder - real optimizer coming soon"})
+def _get_user_delivery_point(user: models.User, address_id: Optional[int] = None) -> Tuple[models.Address, float, float]:
+    """
+    Resolve an Address for the user and return (address_obj, lat, long).
+    Prefers passed address_id, else default address, else newest address.
+    """
+    addr_qs = models.Address.objects.filter(user=user)
+    if address_id:
+        addr = addr_qs.filter(pk=address_id).first()
+        if not addr:
+            raise ValueError("Address not found")
+    else:
+        addr = addr_qs.filter(is_default=True).first() or addr_qs.order_by("-updated_at").first()
+        if not addr:
+            raise ValueError("No address on file")
+
+    if not (addr.location_lat and addr.location_long):
+        full = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
+        lat, lng = get_lat_long_from_address(full)
+        if not (lat and lng):
+            raise ValueError("Address could not be geocoded")
+        addr.location_lat, addr.location_long = lat, lng
+        addr.save(update_fields=["location_lat", "location_long"])
+
+    return addr, float(addr.location_lat), float(addr.location_long)
 
 
 @api_view(["POST"])
 @authentication_classes([CustomTokenAuthentication])
 @permission_classes([IsAuthenticated])
-def create_order(request):
+def optimize_basket(request):
     """
-    Create an order for a delivery address supplied in payload.
-
     Body:
     {
-      "items": [{ "product_id": 1, "quantity": 2 }, ...],
-      "delivery_address": "string",          # required
-      "contact_number": "string",            # required
-      "selected_mart_id": 123 (optional)     # if user chooses a mart from nearby list
+      "items": [{ "product_id": 1, "quantity": 2, "weight_kg": 1.5? }, ...],
+      "address_id": 123?,                     # optional; else uses default address
+      "allow_swaps": true/false               # default true (swap to cheapest mart by same product name)
     }
-
-    Logic:
-    - Geocode delivery_address
-    - Compute nearest mart among (a) selected_mart_id (if provided, validated) or
-      (b) marts containing ordered products (if any) -> choose the nearest
-      (c) fallback: nearest approved mart in DB
-    - Compute delivery_charge from chosen mart -> add to order total
-    - Save order and order items (order model unchanged; delivery fields are returned in response)
+    Strategy:
+      1) Optionally swap each line to the cheapest price among products with the same name across marts.
+      2) Group by mart, compute delivery per mart: 5 * distance_km + 5 * total_weight_kg.
+      3) Iteratively try moving single items across marts to reduce total; stop when no improvement.
+      4) Tie-break equal totals by lower ETA (sum of mart ETAs).
+      Constraints:
+      - Only approved marts and in-stock products are considered.
+      - If item.weight_kg not provided, use Product.unit_weight_kg.
     """
     data = request.data or {}
     items = data.get("items", [])
-    delivery_address = data.get("delivery_address")
+    allow_swaps = bool(data.get("allow_swaps", True))
+    address_id = data.get("address_id")
+
+    if not items:
+        print('optimize_basket: missing items in request', getattr(request, 'user', None), 'data=', data)
+        return Response({"error": "items are required"}, status=400)
+
+    # Resolve address + coords
+    try:
+        addr, addr_lat, addr_long = _get_user_delivery_point(request.user, address_id=address_id)
+    except ValueError as e:
+        print('optimize_basket: address resolution failed:', str(e), 'user=', getattr(request, 'user', None), 'data=', data)
+        return Response({"error": str(e)}, status=400)
+
+    # Load products referenced in items
+    product_map: Dict[int, models.Product] = {}
+    for it in items:
+        pid = it.get("product_id")
+        if pid is None:
+            print('optimize_basket: item missing product_id, item=', it)
+            continue
+        p = models.Product.objects.filter(pk=pid).select_related("mart").first()
+        if p:
+            product_map[pid] = p
+        else:
+            print(f'optimize_basket: product not found for product_id={pid}')
+
+    # Build candidate sets per name (approved & in-stock only)
+    variants_by_name: Dict[str, List[models.Product]] = {}
+    if allow_swaps:
+        names = list({p.name for p in product_map.values()})
+        for nm in names:
+            variants_by_name[nm] = list(
+                models.Product.objects.filter(
+                    name=nm, mart__approved=True, stock__gt=0
+                ).select_related("mart")
+            )
+
+    # Prepare working items with weight fallback to product.unit_weight_kg
+    work_items: List[Dict] = []
+    for it in items:
+        pid = it.get("product_id")
+        qty = int(it.get("quantity", 1))
+        base_product = product_map.get(pid)
+        if not base_product:
+            continue
+
+        # compute per-unit weight (request override > product default > 1.0)
+        if it.get("weight_kg") is not None:
+            weight_each = float(it.get("weight_kg"))
+        else:
+            uw = getattr(base_product, "unit_weight_kg", None)
+            weight_each = float(uw) if uw is not None else 1.0
+
+        # skip unapproved/OOS base product unless we can swap
+        if (not getattr(base_product.mart, "approved", True)) or (getattr(base_product, "stock", 0) <= 0):
+            if allow_swaps:
+                alts = variants_by_name.get(base_product.name, [])
+                if not alts:
+                    continue
+                base_product = min(alts, key=lambda pr: float(pr.price))
+            else:
+                continue
+
+        chosen = base_product
+        if allow_swaps:
+            cand = variants_by_name.get(base_product.name) or [base_product]
+            if cand:
+                chosen = min(cand, key=lambda pr: float(pr.price))
+
+        work_items.append({
+            "name": chosen.name,
+            "product": chosen,
+            "qty": qty,
+            "weight_total": weight_each * qty,
+            "unit_price": float(chosen.price),
+        })
+
+    # Helper: totals for assignment (mart_id -> items)
+    def compute_totals(assign: Dict[int, List[Dict]]) -> Dict:
+        total_price = 0.0
+        total_delivery = 0.0
+        total_eta = 0
+        mart_breakdown = []
+
+        for mart_id, its in assign.items():
+            if not its:
+                continue
+            mart = its[0]["product"].mart
+            # safety: ignore non-approved marts
+            if not getattr(mart, "approved", True):
+                continue
+
+            mart_weight = sum(i["weight_total"] for i in its)
+            items_price = sum(i["unit_price"] * i["qty"] for i in its)
+            dist = distance_km_between(addr_lat, addr_long, float(mart.location_lat), float(mart.location_long))
+            delivery = calculate_delivery_charge(dist, mart_weight)
+            eta = eta_minutes_from_distance(dist)
+
+            total_price += items_price
+            total_delivery += delivery
+            total_eta += eta
+
+            mart_breakdown.append({
+                "mart_id": mart.mart_id,
+                "mart_name": mart.name,
+                "distance_km": round(dist, 3),
+                "eta_min": eta,
+                "weight_kg": round(mart_weight, 3),
+                "delivery_charge": int(delivery),
+                "items": [
+                    {
+                        "product_id": i["product"].product_id,
+                        "name": i["name"],
+                        "qty": i["qty"],
+                        "unit_price": i["unit_price"],
+                        "line_price": round(i["unit_price"] * i["qty"], 2),
+                    } for i in its
+                ]
+            })
+
+        grand_total = round(total_price + total_delivery, 2)
+        return {
+            "items_price": round(total_price, 2),
+            "delivery_total": int(total_delivery),
+            "grand_total": grand_total,
+            "eta_total_min": int(total_eta),
+            "marts": mart_breakdown,
+        }
+
+    # Initial assignment: only approved marts
+    assignment: Dict[int, List[Dict]] = {}
+    for wi in work_items:
+        if getattr(wi["product"].mart, "approved", True):
+            m_id = wi["product"].mart_id
+            assignment.setdefault(m_id, []).append(wi)
+
+    best_plan = compute_totals(assignment)
+
+    # Greedy improvements by moving items between approved marts (ETA tie-break)
+    if allow_swaps:
+        improved = True
+        max_iters = 50
+        iters = 0
+        while improved and iters < max_iters:
+            improved = False
+            iters += 1
+
+            for src_mart_id, items_list in list(assignment.items()):
+                for itm in list(items_list):
+                    name = itm["name"]
+
+                    candidates = [
+                        pr for pr in variants_by_name.get(name, [])
+                        if getattr(pr.mart, "approved", True) and getattr(pr, "stock", 0) > 0
+                    ]
+                    if not candidates:
+                        continue
+
+                    for cand_prod in candidates:
+                        tgt_mart_id = cand_prod.mart_id
+                        if tgt_mart_id == src_mart_id:
+                            continue
+
+                        # simulate move
+                        # guard against the case where src_mart_id was popped earlier
+                        if src_mart_id not in assignment or itm not in assignment.get(src_mart_id, []):
+                            # item was already moved/removed in a previous iteration — skip
+                            continue
+                        assignment[src_mart_id].remove(itm)
+                        if not assignment.get(src_mart_id):
+                            assignment.pop(src_mart_id, None)
+
+                        moved = dict(itm)
+                        moved["product"] = cand_prod
+                        moved["unit_price"] = float(cand_prod.price)
+                        assignment.setdefault(tgt_mart_id, []).append(moved)
+
+                        new_plan = compute_totals(assignment)
+
+                        if (new_plan["grand_total"] < best_plan["grand_total"]) or (
+                            new_plan["grand_total"] == best_plan["grand_total"]
+                            and new_plan["eta_total_min"] < best_plan["eta_total_min"]
+                        ):
+                            best_plan = new_plan
+                            improved = True
+                        else:
+                            # revert
+                            assignment[tgt_mart_id].remove(moved)
+                            if not assignment[tgt_mart_id]:
+                                assignment.pop(tgt_mart_id, None)
+                            assignment.setdefault(src_mart_id, []).append(itm)
+
+                if src_mart_id in assignment and not assignment[src_mart_id]:
+                    assignment.pop(src_mart_id, None)
+
+    return Response({
+        "address": {
+            "id": addr.address_id,
+            "summary": f"{addr.line1}, {addr.city}",
+            "lat": addr_lat,
+            "long": addr_long,
+        },
+        "items_count": sum(i["qty"] for bucket in assignment.values() for i in bucket),
+        "result": best_plan,
+        "notes": "Pricing: ₹5/km + ₹5/kg. ETA tie-break when costs are equal. Approved marts & in-stock only.",
+    })
+
+
+# --------------------- Orders ---------------------
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def create_order(request):
+    data = request.data or {}
+    # request data inspected during debugging previously; removed verbose logging
+    items = data.get("items", [])
+    address_id = data.get("address_id")
+    address_obj_payload = data.get("address")
     contact_number = data.get("contact_number")
-    selected_mart_id = data.get("selected_mart_id", None)
 
     if not items:
         return Response({"error": "items are required"}, status=400)
-    if not delivery_address or not contact_number:
-        return Response({"error": "delivery_address and contact_number are required"}, status=400)
+    if not address_id or not contact_number:
+        return Response({"error": "address_id and contact_number are required"}, status=400)
 
-    # Geocode the delivery address
-    lat, lng = get_lat_long_from_address(delivery_address)
-    if not (lat and lng):
-        return Response({"error": "Could not geocode delivery address"}, status=400)
+    addr = None
+    if address_id:
+        try:
+            addr = models.Address.objects.get(pk=address_id, user=request.user)
+        except models.Address.DoesNotExist:
+            return Response({"error": "Address not found"}, status=404)
+    elif address_obj_payload:
+        # create an address object for the user from provided payload
+        addr = models.Address.objects.create(
+            user=request.user,
+            line1=address_obj_payload.get('line1', ''),
+            line2=address_obj_payload.get('line2'),
+            city=address_obj_payload.get('city', 'Visakhapatnam'),
+            state=address_obj_payload.get('state', 'Andhra Pradesh'),
+            pincode=address_obj_payload.get('pincode'),
+            contact_phone=address_obj_payload.get('contact_phone'),
+            location_lat=address_obj_payload.get('location_lat'),
+            location_long=address_obj_payload.get('location_long'),
+        )
 
-    # Create order (we keep existing Order schema; not persisting delivery fields to DB unless you add them)
+    # ensure address has coordinates
+    if not (addr.location_lat and addr.location_long):
+        full_addr = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
+        lat, lng = get_lat_long_from_address(full_addr)
+        if not (lat and lng):
+            return Response({"error": "Address could not be geocoded"}, status=400)
+        addr.location_lat, addr.location_long = lat, lng
+        addr.save(update_fields=["location_lat", "location_long"])
+
     total_cost = Decimal("0")
+    total_weight = 0.0
     order = models.Order.objects.create(user=request.user, total_cost=0, status="pending")
 
     marts_in_order = set()
     for item in items:
         pid = item.get("product_id")
         qty = int(item.get("quantity", 1))
-        product = models.Product.objects.filter(pk=pid).first()
+        product = models.Product.objects.filter(pk=pid).select_related("mart").first()
         if not product:
             continue
 
+        # per-unit weight: request override > product.unit_weight_kg > 1.0
+        if item.get("weight_kg") is not None:
+            weight_each = float(item.get("weight_kg"))
+        else:
+            uw = getattr(product, "unit_weight_kg", None)
+            weight_each = float(uw) if uw is not None else 1.0
+
         total_cost += Decimal(qty) * product.price
+        total_weight += weight_each * qty
         marts_in_order.add(product.mart_id)
 
         models.OrderItem.objects.create(
@@ -468,70 +762,244 @@ def create_order(request):
             price_at_purchase=product.price,
         )
 
-    # Determine chosen mart:
-    chosen_mart = None
-    distance_km = None
-    delivery_charge = 0
+    # choose nearest approved mart among candidates
+    candidate_marts = models.Mart.objects.filter(mart_id__in=list(marts_in_order), approved=True)
+    if not candidate_marts.exists():
+        candidate_marts = models.Mart.objects.filter(approved=True)
 
-    if selected_mart_id:
-        chosen_mart = models.Mart.objects.filter(pk=selected_mart_id, approved=True).first()
-        if not chosen_mart:
-            return Response({"error": "Selected mart not found or not approved"}, status=400)
-    else:
-        # If products are from specific marts, consider only those; otherwise consider all approved marts
-        if marts_in_order:
-            candidate_marts = models.Mart.objects.filter(mart_id__in=list(marts_in_order), approved=True)
-            # if no candidate marts (shouldn't happen), fallback to all approved marts
-            if not candidate_marts.exists():
-                candidate_marts = models.Mart.objects.filter(approved=True)
-        else:
-            candidate_marts = models.Mart.objects.filter(approved=True)
+    best = None
+    best_dist = None
+    for m in candidate_marts:
+        d = distance_km_between(
+            float(addr.location_lat), float(addr.location_long),
+            float(m.location_lat), float(m.location_long)
+        )
+        if best is None or d < best_dist:
+            best = m
+            best_dist = d
 
-        # find nearest mart among candidates
-        best = None
-        best_dist = None
-        for m in candidate_marts:
-            mlat = float(m.location_lat)
-            mlong = float(m.location_long)
-            d = distance_km_between(float(lat), float(lng), mlat, mlong)
-            if best is None or d < best_dist:
-                best = m
-                best_dist = d
-        chosen_mart = best
-        distance_km = best_dist
+    chosen_mart = best
+    delivery_charge = calculate_delivery_charge(best_dist if best_dist is not None else 0.0, total_weight)
+    total_cost += Decimal(delivery_charge)
 
-    if chosen_mart:
-        # compute delivery charge for chosen mart
-        if distance_km is None:
-            distance_km = distance_km_between(float(lat), float(lng), float(chosen_mart.location_lat), float(chosen_mart.location_long))
-        delivery_charge = calculate_delivery_charge(distance_km)
-        total_cost += Decimal(delivery_charge)
-
+    # attach delivery address and snapshot for historical traceability
+    if addr:
+        order.delivery_address = addr
+        try:
+            order.delivery_address_snapshot = f"{addr.line1}, {addr.city}, {addr.state} {addr.pincode}"
+            order.delivery_address_lat = addr.location_lat
+            order.delivery_address_long = addr.location_long
+        except Exception:
+            pass
     order.total_cost = total_cost
     order.save()
 
-    # response payload
     payload = serializers.OrderSerializer(order).data
     payload.update({
-        "delivery_address": delivery_address,
-        "delivery_lat": float(lat),
-        "delivery_long": float(lng),
+        "delivery_address": f"{addr.line1}, {addr.city}",
         "contact_number": contact_number,
         "chosen_mart_id": chosen_mart.mart_id if chosen_mart else None,
         "chosen_mart_name": chosen_mart.name if chosen_mart else None,
-        "distance_km": round(distance_km, 3) if distance_km is not None else None,
+        "distance_km": round(best_dist, 3) if best_dist is not None else None,
         "delivery_charge": delivery_charge,
+        "total_weight_kg": round(total_weight, 3),
     })
-
     return Response(payload)
 
 
-# --------------------- Shopping List Parsing ---------------------
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def create_order_from_plan(request):
+    """
+    Accepts a full optimizer plan and creates one Order per mart described in the plan.
+    Body:
+    {
+      "plan": { "marts": [ { "mart_id": 1, "items": [{"product_id":X, "qty":N}, ...] }, ... ] },
+      "address_id": 123,
+      "contact_number": "999..."
+    }
+    Returns: { orders: [ order_payload, ... ] }
+    """
+    data = request.data or {}
+    # create_order_from_plan receives a plan produced by the optimizer
+    plan = data.get("plan")
+    address_id = data.get("address_id")
+    contact_number = data.get("contact_number")
+
+    if not plan or not isinstance(plan, dict) or not plan.get("marts"):
+        return Response({"error": "plan with marts is required"}, status=400)
+    if not address_id or not contact_number:
+        return Response({"error": "address_id and contact_number are required"}, status=400)
+
+    addr = None
+    if address_id:
+        try:
+            addr = models.Address.objects.get(pk=address_id, user=request.user)
+        except models.Address.DoesNotExist:
+            return Response({"error": "Address not found"}, status=404)
+    elif data.get('address'):
+        ap = data.get('address')
+        addr = models.Address.objects.create(
+            user=request.user,
+            line1=ap.get('line1',''),
+            line2=ap.get('line2'),
+            city=ap.get('city','Visakhapatnam'),
+            state=ap.get('state','Andhra Pradesh'),
+            pincode=ap.get('pincode'),
+            contact_phone=ap.get('contact_phone'),
+            location_lat=ap.get('location_lat'),
+            location_long=ap.get('location_long'),
+        )
+
+    # ensure address coords
+    if not (addr.location_lat and addr.location_long):
+        full_addr = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
+        lat, lng = get_lat_long_from_address(full_addr)
+        if not (lat and lng):
+            return Response({"error": "Address could not be geocoded"}, status=400)
+        addr.location_lat, addr.location_long = lat, lng
+        addr.save(update_fields=["location_lat", "location_long"])
+
+    created = []
+    try:
+        with transaction.atomic():
+            for mart_entry in plan.get("marts", []):
+                mart_id = mart_entry.get("mart_id")
+                items = mart_entry.get("items", [])
+                if not mart_id or not items:
+                    continue
+
+                # resolve mart object
+                mart_obj = models.Mart.objects.filter(mart_id=mart_id, approved=True).first()
+                if not mart_obj:
+                    # skip this mart
+                    continue
+
+
+                # collect valid products first; skip mart if nothing valid
+                total_cost = Decimal("0")
+                total_weight = 0.0
+                collected_items = []
+
+                for it in items:
+                    pid = it.get("product_id")
+                    qty = int(it.get("qty", it.get("quantity", 1)))
+                    product = models.Product.objects.filter(pk=pid, mart__mart_id=mart_id).select_related("mart").first()
+                    # fallback: try to fetch product irrespective of mart
+                    if not product:
+                        product = models.Product.objects.filter(pk=pid).select_related("mart").first()
+                    if not product:
+                        continue
+
+                    # per-unit weight: product.unit_weight_kg > 1.0 default
+                    uw = getattr(product, "unit_weight_kg", None)
+                    weight_each = float(uw) if uw is not None else 1.0
+                    total_weight += weight_each * qty
+
+                    total_cost += Decimal(qty) * product.price
+
+                    collected_items.append((product, qty))
+
+                if not collected_items:
+                    # nothing valid for this mart -> skip
+                    continue
+
+                order = models.Order.objects.create(user=request.user, total_cost=0, status="pending")
+
+                for product, qty in collected_items:
+                    models.OrderItem.objects.create(
+                        order=order,
+                        product=product,
+                        mart=product.mart,
+                        quantity=qty,
+                        price_at_purchase=product.price,
+                    )
+
+                # compute delivery charge based on distance between mart and address
+                try:
+                    dist = distance_km_between(float(addr.location_lat), float(addr.location_long), float(mart_obj.location_lat), float(mart_obj.location_long))
+                except Exception:
+                    dist = 0.0
+
+                delivery_charge = calculate_delivery_charge(dist, total_weight)
+                total_cost += Decimal(delivery_charge)
+
+                # attach delivery address snapshot
+                if addr:
+                    order.delivery_address = addr
+                    try:
+                        order.delivery_address_snapshot = f"{addr.line1}, {addr.city}, {addr.state} {addr.pincode}"
+                        order.delivery_address_lat = addr.location_lat
+                        order.delivery_address_long = addr.location_long
+                    except Exception:
+                        pass
+
+                order.total_cost = total_cost
+                order.save()
+
+                payload = serializers.OrderSerializer(order).data
+                payload.update({
+                    "delivery_address": f"{addr.line1}, {addr.city}",
+                    "contact_number": contact_number,
+                    "chosen_mart_id": mart_obj.mart_id,
+                    "chosen_mart_name": mart_obj.name,
+                    "distance_km": round(dist, 3),
+                    "delivery_charge": int(delivery_charge),
+                    "total_weight_kg": round(total_weight, 3),
+                })
+                created.append(payload)
+                # serializer introspection removed to avoid noisy debug output in tests/logs
+
+    except Exception as e:
+        # rollback will occur automatically because of transaction.atomic()
+        print('create_order_from_plan failed:', e)
+        return Response({"error": f"Plan creation failed: {str(e)}"}, status=500)
+
+    if not created:
+        return Response({"error": "No orders were created from plan"}, status=400)
+
+    return Response({"orders": created})
+
+
+# --------------------- Nearby marts (by free-form address string) ---------------------
+@api_view(["POST"])
+def nearby_marts(request):
+    data = request.data or {}
+    address = data.get("address")
+    radius_km = data.get("radius_km", None)
+    weight_kg = float(data.get("weight_kg", 1.0))
+
+    if not address:
+        return Response({"error": "address is required"}, status=400)
+
+    lat, lng = get_lat_long_from_address(address)
+    if not (lat and lng):
+        return Response({"error": "Could not geocode address"}, status=400)
+
+    marts_qs = models.Mart.objects.filter(approved=True)
+    marts_list = marts_with_distances_to(lat, lng, marts_qs, weight_kg=weight_kg)
+
+    if radius_km is not None:
+        try:
+            r = float(radius_km)
+            marts_list = [m for m in marts_list if m["distance_km"] <= r]
+        except Exception:
+            pass
+
+    return Response({
+        "address": address,
+        "address_lat": float(lat),
+        "address_long": float(lng),
+        "assumed_weight_kg": weight_kg,
+        "marts": marts_list
+    })
+
+
 @api_view(["POST"])
 def parse_shopping_list(request):
-    text = request.data.get("text")
+    text = (request.data or {}).get("text", "")
     if not text:
         return Response({"error": "text required"}, status=400)
-
     items = [i.strip() for i in text.replace("\n", ",").split(",") if i.strip()]
     return Response({"items": items})

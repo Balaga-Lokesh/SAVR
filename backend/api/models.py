@@ -33,13 +33,11 @@ class User(models.Model):
 
 
 class Admin(models.Model):
-    ROLE_CHOICES = [('main_admin', 'Main Admin'), ('mart_admin', 'Mart Admin')]
     admin_id = models.AutoField(primary_key=True)
     username = models.CharField(max_length=50, unique=True)
     email = models.EmailField(max_length=254, unique=True, null=True, blank=True)
     password_hash = models.CharField(max_length=255)
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
-    mart = models.ForeignKey('Mart', null=True, blank=True, on_delete=models.SET_NULL, db_column='mart_id', related_name='+')
+    role = models.CharField(max_length=20, choices=[('main_admin','Main Admin'),('mart_admin','Mart Admin')])
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -56,7 +54,13 @@ class Mart(models.Model):
     location_lat = models.DecimalField(max_digits=10, decimal_places=6, db_index=True)
     location_long = models.DecimalField(max_digits=10, decimal_places=6, db_index=True)
     address = models.TextField(null=True, blank=True)
-    admin = models.ForeignKey(Admin, null=True, blank=True, on_delete=models.SET_NULL, db_column='admin_id', related_name='+')
+    # SAVR acts as delivery assistant; each mart still has an admin account
+    admin = models.ForeignKey(
+        Admin,
+        on_delete=models.PROTECT,
+        db_column='admin_id',
+        related_name='marts',
+    )
     approved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -66,6 +70,31 @@ class Mart(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class Address(models.Model):
+    address_id = models.AutoField(primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, db_column='user_id', related_name='addresses')
+    label = models.CharField(max_length=50, null=True, blank=True)
+    contact_name = models.CharField(max_length=100, null=True, blank=True)
+    contact_phone = models.CharField(max_length=20, null=True, blank=True)
+    line1 = models.CharField(max_length=255)
+    line2 = models.CharField(max_length=255, null=True, blank=True)
+    city = models.CharField(max_length=80, default="Visakhapatnam")
+    state = models.CharField(max_length=80, default="Andhra Pradesh")
+    pincode = models.CharField(max_length=10, null=True, blank=True)
+    location_lat = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
+    location_long = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
+    is_default = models.BooleanField(default=False)
+    instructions = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'addresses'
+
+    def __str__(self):
+        return f"{self.label or 'Address'} · {self.city}"
 
 
 class Product(models.Model):
@@ -84,6 +113,9 @@ class Product(models.Model):
     stock = models.IntegerField(default=0)
     description = models.TextField(blank=True, null=True)
     quality_score = models.DecimalField(max_digits=3, decimal_places=1, default=0)
+    # NEW: per-unit weight (kg) for delivery cost calculation
+    unit_weight_kg = models.DecimalField(max_digits=6, decimal_places=3, default=1.0,
+                                         validators=[MinValueValidator(0)])
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     image_url = models.CharField(max_length=255, blank=True, null=True)
@@ -157,6 +189,14 @@ class Order(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, db_column='user_id')
     total_cost = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    # Delivery address reference and snapshot for historical consistency
+    delivery_address = models.ForeignKey(
+        'Address', null=True, blank=True, on_delete=models.SET_NULL,
+        db_column='delivery_address_id', related_name='orders'
+    )
+    delivery_address_snapshot = models.TextField(null=True, blank=True)
+    delivery_address_lat = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
+    delivery_address_long = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -191,7 +231,7 @@ class DeliveryPartner(models.Model):
     availability = models.BooleanField(default=True)
     approved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'delivery_partners'
@@ -214,7 +254,7 @@ class Delivery(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='assigned')
     route_data = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'deliveries'
@@ -225,7 +265,13 @@ class Delivery(models.Model):
 
 class AnalyticsLog(models.Model):
     log_id = models.AutoField(primary_key=True)
-    admin = models.ForeignKey(Admin, on_delete=models.CASCADE, db_column='admin_id')
+    admin = models.ForeignKey(
+        Admin,
+        on_delete=models.CASCADE,
+        db_column='admin_id',
+        null=True,
+        blank=True,
+    )
     action_type = models.CharField(max_length=50, null=True, blank=True)
     details = models.TextField(null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
@@ -260,11 +306,11 @@ class OTPCode(models.Model):
 class UserToken(models.Model):
     id = models.BigAutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, db_column='user_id')
-    key = models.CharField(max_length=80, unique=True)
+    token_key = models.CharField(max_length=80, unique=True, db_column='token_key')
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         db_table = 'user_tokens'
 
     def __str__(self):
-        return f"Token for {self.user}: {self.key[:8]}..."
+        return f"Token for {self.user}: {self.token_key[:8]}..."

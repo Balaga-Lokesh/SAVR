@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Plus, X, ShoppingCart, Sparkles } from "lucide-react";
-import axios from "axios";
+// use fetch to avoid adding axios dependency
 
 interface ShoppingItem {
   id: string;
@@ -12,8 +12,11 @@ interface ShoppingItem {
   quantity: number;
   category: string;
 }
+interface ShoppingListProps {
+  onOptimize?: (items: ShoppingItem[]) => void;
+}
 
-const ShoppingList: React.FC = () => {
+const ShoppingList: React.FC<ShoppingListProps> = ({ onOptimize }) => {
   const [items, setItems] = useState<ShoppingItem[]>([]);
   const [newItem, setNewItem] = useState("");
   const [quantity, setQuantity] = useState(1);
@@ -49,14 +52,18 @@ const ShoppingList: React.FC = () => {
   const handleOptimize = async () => {
     if (items.length > 0) {
       try {
-        const response = await axios.post("http://127.0.0.1:8000/api/v1/optimize_basket/", {
-          items,
+        const res = await fetch('/api/v1/basket/optimize/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items }),
         });
-        console.log("Optimized Result:", response.data);
-        alert("Cart optimized! Check console for details 🚀");
-      } catch (error: any) {
-        console.error("Optimization failed:", error.response?.data || error.message);
-        alert("Optimization failed. Try again.");
+        const data = await res.json();
+        console.log('Optimized Result:', data);
+        if (onOptimize) onOptimize(items);
+        alert('Cart optimized! Check console for details 🚀');
+      } catch (err: any) {
+        console.error('Optimization failed:', err?.message || err);
+        alert('Optimization failed. Try again.');
       }
     }
   };

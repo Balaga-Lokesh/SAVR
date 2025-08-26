@@ -1,99 +1,63 @@
-// src/App.tsx
-import React, { useEffect, useState } from "react";
-import { Routes, Route, useNavigate } from "react-router-dom";
-import Index from "./pages/Index";
-import Login from "./pages/Login";
-import VerifyOTP from "./pages/VerifyOTP";
-import NotFound from "./pages/NotFound";
-import ShoppingList from "./components/ShoppingList";
-import OptimizedCart from "./components/OptimizedCart";
-import CheckoutFlow from "./components/CheckoutFlow";
+import React from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import { ThemeToggle } from "./components/ui/ThemeToggle";
+import AuthedHeader from "@/components/AuthedHeader";
 
-// --- Interfaces ---
-interface Product {
-  product_id: number;
-  name: string;
-  category: string;
-  price: number;
-  quality_score: number;
-  mart_name: string;
-  image_url?: string;
-}
-
-interface CartItem {
-  product_id: number;
-  quantity: number;
-}
+import Index from "@/pages/Index";
+import Login from "@/pages/Login";
+import UserProfile from "./pages/UserProfile";
+import Addresses from "@/pages/Addresses";
+import ShoppingList from "@/components/ShoppingList";
+import OptimizedCart from "@/components/OptimizedCart";
+import CheckoutFlow from "@/components/CheckoutFlow";
+import VerifyOTP from "@/pages/VerifyOTP";
+import NotFound from "@/pages/NotFound";
 
 const App: React.FC = () => {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [cart, setCart] = useState<CartItem[]>(() => {
-    try {
-      const saved = localStorage.getItem("cart");
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
+  // Minimal local state to satisfy component prop requirements
+  const [cart, setCart] = React.useState<any[]>([]);
+  const [products, setProducts] = React.useState<any[]>([]);
 
-  // Fetch products from backend
-  useEffect(() => {
+  // load products once (uses products/with-images to ensure image_url is present)
+  React.useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:8000/api/v1/products/with-images/");
-        if (!res.ok) throw new Error("Failed to fetch products");
+        const res = await fetch('/api/v1/products/with-images/');
+        if (!res.ok) return;
         const data = await res.json();
         setProducts(data);
-      } catch {
-        console.warn("Backend down, showing empty list");
-        setProducts([]);
-      } finally {
-        setLoading(false);
+      } catch (e) {
+        console.error('Failed to load products', e);
       }
     };
     load();
   }, []);
 
-  // Persist cart to local storage
-  useEffect(() => {
-    localStorage.setItem("cart", JSON.stringify(cart));
-  }, [cart]);
+  const handleNavigateToCart = () => {
+    // simple client-side navigation to /cart
+    window.history.pushState({}, '', '/cart');
+    // optional: dispatch a popstate so router notices
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
+
+  const handleOrderComplete = () => {
+    setCart([]);
+  };
 
   return (
     <ThemeProvider defaultTheme="system" storageKey="savr-theme">
-      <div className="min-h-screen text-foreground bg-background dark:bg-slate-900 dark:text-white transition-colors duration-300">
-        <ThemeToggle />
-        {loading ? (
-          <p className="text-center mt-10">Loading products...</p>
-        ) : (
-          <Routes>
-            <Route path="/" element={<Index />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/verify-otp" element={<VerifyOTP />} />
-            <Route
-              path="/shopping-list"
-              element={
-                <ShoppingList
-                  products={products}
-                  cart={cart}
-                  setCart={setCart}
-                  onNavigateToCart={() => navigate("/cart")}
-                />
-              }
-            />
-            <Route path="/cart" element={<OptimizedCart cart={cart} setCart={setCart} />} />
-            <Route
-              path="/checkout"
-              element={<CheckoutFlow onOrderComplete={() => setCart([])} />}
-            />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        )}
-      </div>
+      <AuthedHeader cartCount={cart.length} onCartClick={handleNavigateToCart} />
+      <Routes>
+        <Route path="/" element={<Index />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/verify-otp" element={<VerifyOTP />} />
+  <Route path="/profile" element={<UserProfile />} />
+        <Route path="/addresses" element={<Addresses />} />
+    <Route path="/shopping-list" element={<ShoppingList products={products} cart={cart} setCart={setCart} onNavigateToCart={handleNavigateToCart} />} />
+    <Route path="/cart" element={<OptimizedCart cart={cart} setCart={setCart} />} />
+  <Route path="/checkout" element={<CheckoutFlow onOrderComplete={handleOrderComplete} cart={cart} setCart={setCart} />} />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
     </ThemeProvider>
   );
 };
