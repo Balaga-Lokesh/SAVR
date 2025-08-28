@@ -74,11 +74,45 @@ const getCategoryColor = (category: string) => {
 };
 
 const ShoppingList: React.FC<{
-  products: Product[];
-  cart: CartItem[];
+  products?: Product[]; // optional: can be driven by parent or self-fetch
+  cart?: CartItem[];    // optional: we still need setCart for updates
   setCart: React.Dispatch<React.SetStateAction<CartItem[]>>;
   onNavigateToCart: () => void;
 }> = ({ products, cart, setCart, onNavigateToCart }) => {
+  // Local fallback if products prop isn't provided
+  const [fetchedProducts, setFetchedProducts] = useState<Product[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // If parent didn't pass products, fetch them ourselves
+  useEffect(() => {
+    if (Array.isArray(products)) return; // parent driving; no fetch
+    let alive = true;
+    (async () => {
+      try {
+        setIsLoading(true);
+        const base = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+        const res = await fetch(`${base}/api/v1/products/with-images/`);
+        const json = await res.json();
+        const list: Product[] = Array.isArray(json)
+          ? json
+          : Array.isArray(json?.results)
+          ? json.results
+          : [];
+        if (alive) setFetchedProducts(list);
+      } catch (e) {
+        console.error("Failed to load products", e);
+        if (alive) setFetchedProducts([]);
+      } finally {
+        if (alive) setIsLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [products]);
+
+  const sourceProducts: Product[] = Array.isArray(products) ? products : fetchedProducts;
+
   const [searchTerm, setSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -86,7 +120,8 @@ const ShoppingList: React.FC<{
   // group products by normalized name
   const groups = useMemo<GroupedProduct[]>(() => {
     const byName = new Map<string, Product[]>();
-    products.forEach((p) => {
+    (sourceProducts ?? []).forEach((p) => {
+      if (!p?.name) return;
       const key = p.name.trim().toLowerCase();
       if (!byName.has(key)) byName.set(key, []);
       byName.get(key)!.push(p);
@@ -94,17 +129,24 @@ const ShoppingList: React.FC<{
 
     const out: GroupedProduct[] = [];
     byName.forEach((items, key) => {
+      if (!items.length) return;
       const name = items[0].name;
-      const prices = items.map((i) => i.price);
-      const minPrice = Math.min(...prices);
-      const maxPrice = Math.max(...prices);
+      const prices = items.map((i) => Number(i.price) || 0);
+      const minPrice = prices.length ? Math.min(...prices) : 0;
+      const maxPrice = prices.length ? Math.max(...prices) : 0;
       const avgQuality =
-        items.reduce((sum, i) => sum + (Number(i.quality_score) || 0), 0) / (items.length || 1);
+        items.reduce((sum, i) => sum + (Number(i.quality_score) || 0), 0) /
+        (items.length || 1);
 
-      const martNames = Array.from(new Set(items.map((i) => i.mart_name))).sort();
+      const martNames = Array.from(new Set(items.map((i) => i.mart_name).filter(Boolean))).sort();
       const repImage = items.find((i) => i.image_url)?.image_url;
-      const cheapest = items.reduce((best, cur) => (cur.price < best.price ? cur : best), items[0]);
-      const categories = new Set(items.map((i) => i.category));
+      const cheapest =
+        items.reduce(
+          (best, cur) =>
+            (Number(cur.price) || 0) < (Number(best.price) || 0) ? cur : best,
+          items[0]
+        ) || items[0];
+      const categories = new Set(items.map((i) => i.category || "other"));
 
       out.push({
         key,
@@ -121,18 +163,18 @@ const ShoppingList: React.FC<{
 
     out.sort((a, b) => a.name.localeCompare(b.name));
     return out;
-  }, [products]);
+  }, [sourceProducts]);
 
   // initialize quantities
   useEffect(() => {
     const q: Record<string, number> = {};
-    groups.forEach((g) => (q[g.key] = q[g.key] ?? 1));
+    (groups ?? []).forEach((g) => (q[g.key] = q[g.key] ?? 1));
     setQuantities((prev) => ({ ...q, ...prev }));
   }, [groups]);
 
   // filtering
   const filteredGroups = useMemo(() => {
-    return groups.filter((g) => {
+    return (groups ?? []).filter((g) => {
       const matchesName = g.name.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory =
         categoryFilter === "all" ? true : g.categories.has(categoryFilter);
@@ -161,7 +203,7 @@ const ShoppingList: React.FC<{
     });
   };
 
-  const totalItems = cart.reduce((sum, i) => sum + i.quantity, 0);
+  const totalItems = (cart ?? []).reduce((sum, i) => sum + (i?.quantity || 0), 0);
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -196,15 +238,20 @@ const ShoppingList: React.FC<{
         </select>
       </div>
 
+      {/* Loading state */}
+      {isLoading && !(groups?.length) && (
+        <div className="text-center text-gray-600 dark:text-gray-300 py-8">Loading products…</div>
+      )}
+
       {/* Grouped Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 lg:gap-6">
-        {filteredGroups.length === 0 && (
+        {!isLoading && (filteredGroups?.length ?? 0) === 0 && (
           <div className="col-span-full text-center text-gray-600 dark:text-gray-300 py-8">
             No products found
           </div>
         )}
 
-        {filteredGroups.map((g) => (
+        {(filteredGroups ?? []).map((g) => (
           <Card
             key={g.key}
             className="p-3 lg:p-4 bg-white dark:bg-gray-800 border shadow-sm rounded-lg hover:shadow-md transition-shadow"
