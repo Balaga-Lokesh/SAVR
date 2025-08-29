@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ShoppingCart, Search } from "lucide-react";
+import { ShoppingCart, Search, SlidersHorizontal, Star, Store } from "lucide-react";
 
 interface Product {
   product_id: number;
@@ -30,97 +30,82 @@ type GroupedProduct = {
   repImage?: string;
   cheapestProductId: number;
   categories: Set<string>;
+  count: number;
 };
 
+// ---------- helpers ----------
+const INR = (n: number) => `₹${(n ?? 0).toFixed(2)}`;
+
+const categoryClass = (category: string) => {
+  const m: Record<string, string> = {
+    grocery: "bg-green-100 text-green-800 dark:bg-green-900/60 dark:text-green-200",
+    dairy: "bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-200",
+    clothing: "bg-purple-100 text-purple-800 dark:bg-purple-900/60 dark:text-purple-200",
+    essential: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/60 dark:text-yellow-200",
+    other: "bg-gray-100 text-gray-800 dark:bg-gray-700/60 dark:text-gray-200",
+  };
+  return m[category] || m.other;
+};
+
+// deterministic hue from string
+const hueFromString = (s: string) => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return h;
+};
+
+// ---------- product image ----------
 const ProductImage: React.FC<{ src?: string; alt: string; seed: string | number }> = ({
   src,
   alt,
   seed,
 }) => {
   const [error, setError] = useState(false);
-  const w = 160,
-    h = 120;
+  const w = 320,
+    h = 240;
 
+  const base = (import.meta as any).env?.VITE_API_BASE || "http://127.0.0.1:8000";
   const finalSrc =
     !src || error || src.includes("placehold")
       ? `https://picsum.photos/seed/${encodeURIComponent(String(seed))}/${w}/${h}`
       : src.startsWith("http")
       ? src
-      : `${import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000"}${src}`;
+      : `${base}${src}`;
 
   return (
-    <div className="w-full h-28 sm:h-32 md:h-36 lg:h-40 bg-gray-100 dark:bg-gray-700 rounded-md overflow-hidden">
+    <div className="w-full aspect-[4/3] bg-gray-50 dark:bg-gray-800 rounded-lg overflow-hidden">
       <img
         src={finalSrc}
         alt={alt}
-        className="w-full h-full object-contain p-2 transition-transform hover:scale-105"
-        onError={() => setError(true)}
+        className="w-full h-full object-contain p-3 transition-transform duration-300 group-hover:scale-[1.03]"
         loading="lazy"
+        onError={() => setError(true)}
       />
     </div>
   );
 };
 
-// helper for category colors
-const getCategoryColor = (category: string) => {
-  const colors: Record<string, string> = {
-    grocery: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-    dairy: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-    clothing: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
-    essential: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-    other: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200",
-  };
-  return colors[category] || colors.other;
-};
-
+// ---------- component ----------
 const ShoppingList: React.FC<{
-  products?: Product[]; // optional: can be driven by parent or self-fetch
-  cart?: CartItem[];    // optional: we still need setCart for updates
+  products?: Product[];
+  cart?: CartItem[];
   setCart: React.Dispatch<React.SetStateAction<CartItem[]>>;
   onNavigateToCart: () => void;
 }> = ({ products, cart, setCart, onNavigateToCart }) => {
-  // Local fallback if products prop isn't provided
-  const [fetchedProducts, setFetchedProducts] = useState<Product[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const source = Array.isArray(products) ? products : [];
 
-  // If parent didn't pass products, fetch them ourselves
-  useEffect(() => {
-    if (Array.isArray(products)) return; // parent driving; no fetch
-    let alive = true;
-    (async () => {
-      try {
-        setIsLoading(true);
-        const base = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
-        const res = await fetch(`${base}/api/v1/products/with-images/`);
-        const json = await res.json();
-        const list: Product[] = Array.isArray(json)
-          ? json
-          : Array.isArray(json?.results)
-          ? json.results
-          : [];
-        if (alive) setFetchedProducts(list);
-      } catch (e) {
-        console.error("Failed to load products", e);
-        if (alive) setFetchedProducts([]);
-      } finally {
-        if (alive) setIsLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [products]);
-
-  const sourceProducts: Product[] = Array.isArray(products) ? products : fetchedProducts;
-
-  const [searchTerm, setSearchTerm] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("all");
+  // UI state
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<"relevance" | "price_asc" | "price_desc" | "quality_desc">(
+    "relevance"
+  );
   const [quantities, setQuantities] = useState<Record<string, number>>({});
 
-  // group products by normalized name
+  // group by normalized name
   const groups = useMemo<GroupedProduct[]>(() => {
     const byName = new Map<string, Product[]>();
-    (sourceProducts ?? []).forEach((p) => {
+    (source ?? []).forEach((p) => {
       if (!p?.name) return;
       const key = p.name.trim().toLowerCase();
       if (!byName.has(key)) byName.set(key, []);
@@ -135,19 +120,13 @@ const ShoppingList: React.FC<{
       const minPrice = prices.length ? Math.min(...prices) : 0;
       const maxPrice = prices.length ? Math.max(...prices) : 0;
       const avgQuality =
-        items.reduce((sum, i) => sum + (Number(i.quality_score) || 0), 0) /
-        (items.length || 1);
-
+        items.reduce((s, i) => s + (Number(i.quality_score) || 0), 0) / (items.length || 1);
       const martNames = Array.from(new Set(items.map((i) => i.mart_name).filter(Boolean))).sort();
-      const repImage = items.find((i) => i.image_url)?.image_url;
+      const repImage = items.find((i) => !!i.image_url)?.image_url;
       const cheapest =
-        items.reduce(
-          (best, cur) =>
-            (Number(cur.price) || 0) < (Number(best.price) || 0) ? cur : best,
-          items[0]
-        ) || items[0];
+        items.reduce((best, cur) => ((cur.price || 0) < (best.price || 0) ? cur : best), items[0]) ||
+        items[0];
       const categories = new Set(items.map((i) => i.category || "other"));
-
       out.push({
         key,
         name,
@@ -158,169 +137,211 @@ const ShoppingList: React.FC<{
         repImage,
         cheapestProductId: cheapest.product_id,
         categories,
+        count: items.length,
       });
     });
 
-    out.sort((a, b) => a.name.localeCompare(b.name));
     return out;
-  }, [sourceProducts]);
+  }, [source]);
 
-  // initialize quantities
+  // initialize qty per group
   useEffect(() => {
     const q: Record<string, number> = {};
     (groups ?? []).forEach((g) => (q[g.key] = q[g.key] ?? 1));
     setQuantities((prev) => ({ ...q, ...prev }));
   }, [groups]);
 
-  // filtering
-  const filteredGroups = useMemo(() => {
-    return (groups ?? []).filter((g) => {
-      const matchesName = g.name.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesCategory =
-        categoryFilter === "all" ? true : g.categories.has(categoryFilter);
+  // filtering + sorting
+  const visible = useMemo(() => {
+    let arr = (groups ?? []).filter((g) => {
+      const matchesName = g.name.toLowerCase().includes(search.toLowerCase());
+      const matchesCategory = category === "all" ? true : g.categories.has(category);
       return matchesName && matchesCategory;
     });
-  }, [groups, searchTerm, categoryFilter]);
 
-  const changeQuantity = (groupKey: string, delta: number) => {
-    setQuantities((prev) => ({
-      ...prev,
-      [groupKey]: Math.max(1, (prev[groupKey] || 1) + delta),
-    }));
-  };
+    switch (sortBy) {
+      case "price_asc":
+        arr = arr.sort((a, b) => a.minPrice - b.minPrice);
+        break;
+      case "price_desc":
+        arr = arr.sort((a, b) => b.minPrice - a.minPrice);
+        break;
+      case "quality_desc":
+        arr = arr.sort((a, b) => b.avgQuality - a.avgQuality);
+        break;
+      default:
+        arr = arr.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return arr;
+  }, [groups, search, category, sortBy]);
 
-  const addToCart = (group: GroupedProduct) => {
-    const qty = quantities[group.key] || 1;
-    const id = group.cheapestProductId;
+  const changeQty = (k: string, d: number) =>
+    setQuantities((prev) => ({ ...prev, [k]: Math.max(1, (prev[k] || 1) + d) }));
+
+  const addToCart = (g: GroupedProduct) => {
+    const qty = quantities[g.key] || 1;
+    const id = g.cheapestProductId;
     setCart((prev) => {
       const exist = prev.find((i) => i.product_id === id);
-      if (exist) {
-        return prev.map((i) =>
-          i.product_id === id ? { ...i, quantity: i.quantity + qty } : i
-        );
-      }
+      if (exist) return prev.map((i) => (i.product_id === id ? { ...i, quantity: i.quantity + qty } : i));
       return [...prev, { product_id: id, quantity: qty }];
     });
   };
 
-  const totalItems = (cart ?? []).reduce((sum, i) => sum + (i?.quantity || 0), 0);
+  const totalItems = (cart ?? []).reduce((s, i) => s + (i?.quantity || 0), 0);
 
   return (
     <div className="container mx-auto px-4 py-8">
-      {/* Title */}
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Products</h1>
-        <p className="text-muted-foreground">Grouped by product name across marts</p>
+      {/* Heading */}
+      <div className="mb-6 flex flex-col gap-2">
+        <h1 className="text-3xl font-bold tracking-tight">Discover Products</h1>
+        <p className="text-muted-foreground">
+          Compare variants across marts. {visible.length} match{visible.length !== 1 ? "es" : ""}.
+        </p>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-col md:flex-row gap-4 mb-6 items-center">
-        <div className="relative flex-1 w-full">
+      {/* Controls */}
+      <div className="mb-6 grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+        <div className="lg:col-span-6 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
           <Input
-            placeholder="Search products..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search products, e.g. milk, bread, rice..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
             className="pl-10 py-2 rounded-lg border border-gray-300 bg-gray-50 dark:bg-gray-700 dark:text-white"
           />
         </div>
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          className="px-4 py-2 rounded-lg border border-gray-300 bg-gray-50 dark:bg-gray-700 dark:text-white"
-        >
-          <option value="all">All Categories</option>
-          <option value="grocery">Grocery</option>
-          <option value="dairy">Dairy</option>
-          <option value="clothing">Clothing</option>
-          <option value="essential">Essential</option>
-          <option value="other">Other</option>
-        </select>
+
+        <div className="lg:col-span-4">
+          <div className="flex flex-wrap gap-2">
+            {["all", "grocery", "dairy", "clothing", "essential", "other"].map((c) => (
+              <button
+                key={c}
+                onClick={() => setCategory(c)}
+                className={`px-3 py-1.5 rounded-full border text-sm transition ${
+                  category === c
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 hover:border-blue-400"
+                }`}
+              >
+                {c[0].toUpperCase() + c.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="lg:col-span-2 justify-self-end">
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal className="h-4 w-4 text-gray-500" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="px-3 py-2 rounded-lg border border-gray-300 bg-white dark:bg-gray-800 dark:text-white"
+            >
+              <option value="relevance">Sort: A → Z</option>
+              <option value="price_asc">Price: Low to High</option>
+              <option value="price_desc">Price: High to Low</option>
+              <option value="quality_desc">Quality: High to Low</option>
+            </select>
+          </div>
+        </div>
       </div>
 
-      {/* Loading state */}
-      {isLoading && !(groups?.length) && (
-        <div className="text-center text-gray-600 dark:text-gray-300 py-8">Loading products…</div>
-      )}
-
-      {/* Grouped Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 lg:gap-6">
-        {!isLoading && (filteredGroups?.length ?? 0) === 0 && (
-          <div className="col-span-full text-center text-gray-600 dark:text-gray-300 py-8">
-            No products found
+      {/* Grid */}
+      <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 lg:gap-6">
+        {visible.length === 0 && (
+          <div className="col-span-full text-center text-gray-600 dark:text-gray-300 py-10">
+            No products found. Try a different search or category.
           </div>
         )}
 
-        {(filteredGroups ?? []).map((g) => (
-          <Card
-            key={g.key}
-            className="p-3 lg:p-4 bg-white dark:bg-gray-800 border shadow-sm rounded-lg hover:shadow-md transition-shadow"
-          >
-            <ProductImage src={g.repImage} alt={g.name} seed={g.key} />
+        {visible.map((g) => {
+          const hue = hueFromString(g.key);
+          const strip = `bg-[conic-gradient(from_90deg_at_50%_50%,hsl(${hue}_92%_92%),hsl(${(hue + 40) % 360}_90%_96%),white)]`;
+          return (
+            <Card
+              key={g.key}
+              className="group p-3 lg:p-4 bg-white dark:bg-gray-800 border shadow-sm rounded-2xl hover:shadow-md transition"
+            >
+              {/* Accent strip */}
+              <div className={`h-2 rounded-full mb-3 ${strip}`} />
 
-            <div className="mt-3 space-y-2">
-              <h3 className="font-semibold text-sm lg:text-lg text-gray-900 dark:text-white line-clamp-2">
-                {g.name}
-              </h3>
+              <ProductImage src={g.repImage} alt={g.name} seed={g.key} />
 
-              {/* Price + Quality */}
-              <div className="flex items-center justify-between">
-                <span className="text-base lg:text-lg font-bold text-blue-600">
-                  {g.minPrice === g.maxPrice
-                    ? `₹${g.minPrice.toFixed(2)}`
-                    : `₹${g.minPrice.toFixed(2)} – ₹${g.maxPrice.toFixed(2)}`}
-                </span>
-                <span className="text-xs lg:text-sm text-gray-600 dark:text-gray-300">
-                  ⭐ {g.avgQuality.toFixed(1)}
-                </span>
-              </div>
+              <div className="mt-3 space-y-2">
+                <h3 className="font-semibold text-base lg:text-lg text-gray-900 dark:text-white line-clamp-2">
+                  {g.name}
+                </h3>
 
-              {/* Categories as badges */}
-              <div className="flex flex-wrap gap-1">
-                {Array.from(g.categories).map((cat) => (
-                  <Badge key={cat} className={`${getCategoryColor(cat)} text-xs`}>
-                    {cat}
-                  </Badge>
-                ))}
-              </div>
-
-              {/* Available marts */}
-              <div className="text-xs lg:text-sm text-gray-600 dark:text-gray-300">
-                {g.martNames.slice(0, 3).join(", ")}
-                {g.martNames.length > 3 && ` +${g.martNames.length - 3} more`}
-              </div>
-
-              {/* Qty + Add */}
-              <div className="flex items-center justify-between mt-3 gap-2">
-                <div className="flex items-center gap-1 lg:gap-2">
-                  <button
-                    onClick={() => changeQuantity(g.key, -1)}
-                    className="w-6 h-6 lg:w-8 lg:h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-full text-sm hover:bg-gray-200 dark:hover:bg-gray-600"
-                  >
-                    -
-                  </button>
-                  <span className="text-sm lg:text-base min-w-[1.5rem] text-center">
-                    {quantities[g.key] || 1}
+                {/* Price + Quality */}
+                <div className="flex items-center justify-between">
+                  <span className="text-base lg:text-lg font-bold text-blue-600">
+                    {g.minPrice === g.maxPrice ? INR(g.minPrice) : `${INR(g.minPrice)} – ${INR(g.maxPrice)}`}
                   </span>
-                  <button
-                    onClick={() => changeQuantity(g.key, 1)}
-                    className="w-6 h-6 lg:w-8 lg:h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-full text-sm hover:bg-gray-200 dark:hover:bg-gray-600"
-                  >
-                    +
-                  </button>
+                  <div className="flex items-center gap-1 text-xs lg:text-sm text-gray-600 dark:text-gray-300">
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Star
+                        key={n}
+                        className={`h-4 w-4 ${n <= Math.round(g.avgQuality) ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
+                      />
+                    ))}
+                    <span className="ml-1">{g.avgQuality.toFixed(1)}</span>
+                  </div>
                 </div>
 
-                <button
-                  onClick={() => addToCart(g)}
-                  className="px-2 lg:px-3 py-1 bg-blue-600 text-white rounded-lg text-xs lg:text-sm hover:bg-blue-700 transition-colors"
-                  title="Adds the cheapest variant to cart"
-                >
-                  Add to Cart
-                </button>
+                {/* Categories */}
+                <div className="flex flex-wrap gap-1">
+                  {Array.from(g.categories).map((cat) => (
+                    <Badge key={cat} className={`${categoryClass(cat)} text-xs`}>{cat}</Badge>
+                  ))}
+                  <Badge className="bg-gray-100 text-gray-700 dark:bg-gray-700/60 dark:text-gray-200 text-xs">
+                    {g.count} variant{g.count > 1 ? "s" : ""}
+                  </Badge>
+                </div>
+
+                {/* Marts */}
+                <div className="text-xs lg:text-sm text-gray-600 dark:text-gray-300 flex items-center gap-1">
+                  <Store className="h-3.5 w-3.5" />
+                  <span className="truncate">
+                    {g.martNames.slice(0, 3).join(", ")}
+                    {g.martNames.length > 3 && ` +${g.martNames.length - 3} more`}
+                  </span>
+                </div>
+
+                {/* Qty + Add */}
+                <div className="flex items-center justify-between mt-3 gap-2">
+                  <div className="flex items-center gap-1 lg:gap-2">
+                    <button
+                      onClick={() => changeQty(g.key, -1)}
+                      className="w-7 h-7 lg:w-8 lg:h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-full text-sm hover:bg-gray-200 dark:hover:bg-gray-600"
+                      aria-label="Decrease quantity"
+                    >
+                      −
+                    </button>
+                    <span className="text-sm lg:text-base min-w-[1.5rem] text-center">
+                      {quantities[g.key] || 1}
+                    </span>
+                    <button
+                      onClick={() => changeQty(g.key, 1)}
+                      className="w-7 h-7 lg:w-8 lg:h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-full text-sm hover:bg-gray-200 dark:hover:bg-gray-600"
+                      aria-label="Increase quantity"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={() => addToCart(g)}
+                    className="px-3 lg:px-4 py-2 bg-blue-600 text-white rounded-lg text-xs lg:text-sm hover:bg-blue-700 transition-colors"
+                    title="Adds the cheapest variant to cart"
+                  >
+                    Add to Cart
+                  </button>
+                </div>
               </div>
-            </div>
-          </Card>
-        ))}
+            </Card>
+          );
+        })}
       </div>
 
       {/* Floating Cart */}

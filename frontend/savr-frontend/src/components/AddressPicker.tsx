@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
 
 interface Address {
   id: number;
@@ -21,10 +22,12 @@ const AddressPicker: React.FC<Props> = ({ onSelect, onAddNew }) => {
 
   useEffect(() => {
     const fetchAddrs = async () => {
-      const token = sessionStorage.getItem('authToken');
+      const token = sessionStorage.getItem("authToken");
       if (!token) return setAddresses([]);
       try {
-        const r = await fetch('/api/v1/addresses/', { headers: { Authorization: `Token ${token}` } });
+        const r = await fetch("/api/v1/addresses/", {
+          headers: { Authorization: `Token ${token}` },
+        });
         if (!r.ok) return setAddresses([]);
         const data = await r.json();
         const mapped = data.map((a: any) => ({
@@ -51,39 +54,57 @@ const AddressPicker: React.FC<Props> = ({ onSelect, onAddNew }) => {
 
   const handleSelect = (id: number) => {
     setSelected(id);
-    const found = addresses?.find(a => a.id === id) || null;
+    const found = addresses?.find((a) => a.id === id) || null;
     onSelect(found);
   };
 
   return (
-    <div>
-      <div className="mb-2 text-sm font-medium">Saved Addresses</div>
+    <div className="space-y-3">
+      <div className="font-medium">Saved Addresses</div>
+
       {addresses === null ? (
-        <div className="text-sm text-muted-foreground">Loading addresses...</div>
+        <div className="space-y-2">
+          {[1, 2].map((i) => (
+            <div
+              key={i}
+              className="h-14 bg-gray-100 dark:bg-gray-800 animate-pulse rounded-lg"
+            />
+          ))}
+        </div>
       ) : addresses.length === 0 ? (
         <div className="text-sm text-muted-foreground">No saved addresses.</div>
       ) : (
-        <div className="space-y-2">
-          {addresses.map(a => (
-            <label key={a.id} className="flex items-start gap-3 p-2 rounded border">
-              <input
-                type="radio"
-                name="selectedAddress"
-                checked={selected === a.id}
-                onChange={() => handleSelect(a.id)}
-                className="mt-1"
-              />
-              <div className="text-sm">
-                <div className="font-medium truncate">{a.line1}</div>
-                <div className="text-xs text-muted-foreground">{a.city || ''} {a.pincode || ''}</div>
+        <div className="grid gap-2">
+          {addresses.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              onClick={() => handleSelect(a.id)}
+              className={`p-3 rounded-lg border text-left transition
+                ${
+                  selected === a.id
+                    ? "border-blue-600 bg-blue-50 dark:bg-blue-950"
+                    : "border-gray-200 dark:border-gray-700 hover:border-blue-400"
+                }`}
+            >
+              <div className="font-medium truncate">{a.line1}</div>
+              <div className="text-xs text-muted-foreground">
+                {a.city || ""} {a.pincode || ""}
               </div>
-            </label>
+            </button>
           ))}
         </div>
       )}
 
-      <div className="mt-3">
-        <button type="button" onClick={onAddNew} className="text-sm text-fresh underline">Add new address</button>
+      <div>
+        <button
+          type="button"
+          onClick={onAddNew}
+          className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border hover:bg-gray-50 dark:hover:bg-gray-800"
+        >
+          <Plus className="h-4 w-4" />
+          Add New Address
+        </button>
       </div>
     </div>
   );

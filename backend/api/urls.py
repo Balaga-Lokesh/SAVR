@@ -16,12 +16,14 @@ urlpatterns = [
     path("auth/login/", views.login, name="auth-login"),
     path("auth/request-otp/", views.request_otp, name="auth-request-otp"),
     path("auth/verify-otp/", views.verify_otp, name="auth-verify-otp"),
-    path("auth/me/", views.me, name="auth-me"),  # <-- the missing comma was here
+    path("auth/me/", views.me, name="auth-me"),
 
     # --- Addresses ---
     path("addresses/", views.addresses, name="addresses"),
     path("addresses/<int:address_id>/", views.address_detail, name="address-detail"),
     path("addresses/<int:address_id>/default/", views.set_default_address, name="address-set-default"),
+    # alias to match frontend calls:
+    path("addresses/<int:address_id>/set-default/", views.set_default_address, name="address-set-default-legacy"),
 
     # --- Products ---
     path("products/with-images/", views.products_with_images, name="products-with-images"),
@@ -29,8 +31,14 @@ urlpatterns = [
     # --- Basket & Orders ---
     path("basket/", views.basket_view, name="basket"),
     path("basket/optimize/", views.optimize_basket, name="optimize-basket"),
+
+    # multi-mart orders
     path("orders/create-from-plan/", views.create_order_from_plan, name="create-order-from-plan"),
+    # alias to match frontend calls:
+    path("orders/from-plan/", views.create_order_from_plan, name="orders-from-plan"),
+
     path("orders/create/", views.create_order, name="create-order"),
+    path("orders/", views.list_orders, name="orders-list"),
 
     # --- Utilities ---
     path("utils/parse-shopping-list/", views.parse_shopping_list, name="parse-shopping-list"),

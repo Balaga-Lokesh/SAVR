@@ -3,6 +3,7 @@
 import secrets
 import random
 import math
+import re
 from decimal import Decimal
 from typing import Iterable, Optional, Tuple, List, Dict
 
@@ -28,6 +29,7 @@ from geopy.distance import geodesic
 
 from .authentication import CustomTokenAuthentication
 from . import models, serializers
+from .utils import fetch_product_image
 
 # --------------------- Index ---------------------
 def index(request):
@@ -67,13 +69,11 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
 def get_google_image(query: str) -> str:
     return f"https://via.placeholder.com/150?text={query}"
 
-
 def ensure_product_image(product: models.Product) -> models.Product:
     if not product.image_url:
-        product.image_url = get_google_image(product.name)
+        product.image_url = fetch_product_image(product.name) or f"https://via.placeholder.com/150?text={product.name}"
         product.save(update_fields=["image_url"])
     return product
-
 
 @api_view(["GET"])
 def products_with_images(request):
@@ -88,10 +88,23 @@ def products_with_images(request):
 geolocator = Nominatim(user_agent="savr_backend")
 
 def get_lat_long_from_address(address: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
+    """
+    Geocode with Nominatim, auto-appending country for better hit rate.
+    Fallback: if a 6-digit Indian PIN is present and full address fails,
+    try geocoding the PIN alone.
+    """
     try:
-        location = geolocator.geocode(address, timeout=10)
+        query = address if "india" in (address or "").lower() else f"{address}, India"
+        location = geolocator.geocode(query, timeout=10)
         if location:
             return Decimal(str(location.latitude)), Decimal(str(location.longitude))
+        # PIN-only fallback
+        m = re.search(r"\b(\d{6})\b", address or "")
+        if m:
+            pin = m.group(1)
+            alt = geolocator.geocode(f"{pin}, India", timeout=10)
+            if alt:
+                return Decimal(str(alt.latitude)), Decimal(str(alt.longitude))
     except Exception as e:
         print("Geocoding error:", e)
     return None, None
@@ -320,13 +333,17 @@ def addresses(request):
         except Exception:
             lat, lng = None, None
 
-    # If we don't have coords yet, try geocoding the assembled address
+    # If we don't have coords yet, validate + try geocoding the assembled address
     if lat is None or lng is None:
+        pin = (data.get("pincode") or "").strip()
+        if not pin or not re.fullmatch(r"\d{6}", str(pin)):
+            return Response({"error": "Valid 6-digit pincode required"}, status=400)
+
         full = ", ".join(filter(None, [
             data.get("line1"), data.get("line2"),
             data.get("city") or "Visakhapatnam",
             data.get("state") or "Andhra Pradesh",
-            data.get("pincode"),
+            pin,
         ]))
         if full:
             lat, lng = get_lat_long_from_address(full)
@@ -381,6 +398,11 @@ def address_detail(request, address_id):
             setattr(addr, f, data[f])
 
     if any(k in data for k in ["line1","line2","city","state","pincode"]):
+        # require a valid PIN if we need to re-geocode (when coords missing or text changed)
+        pin = (addr.pincode or "").strip()
+        if not pin or not re.fullmatch(r"\d{6}", str(pin)):
+            return Response({"error": "Valid 6-digit pincode required"}, status=400)
+
         full = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
         lat, lng = get_lat_long_from_address(full) if full else (None, None)
         addr.location_lat, addr.location_long = lat, lng
@@ -447,7 +469,7 @@ def _get_user_delivery_point(user: models.User, address_id: Optional[int] = None
         full = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
         lat, lng = get_lat_long_from_address(full)
         if not (lat and lng):
-            raise ValueError("Address could not be geocoded")
+            raise ValueError("Address could not be geocoded. Please include City, State, and a 6-digit PIN code.")
         addr.location_lat, addr.location_long = lat, lng
         addr.save(update_fields=["location_lat", "location_long"])
 
@@ -463,227 +485,231 @@ def optimize_basket(request):
     {
       "items": [{ "product_id": 1, "quantity": 2, "weight_kg": 1.5? }, ...],
       "address_id": 123?,                     # optional; else uses default address
-      "allow_swaps": true/false               # default true (swap to cheapest mart by same product name)
+      "allow_swaps": true/false               # default true
     }
-    Strategy:
-      1) Optionally swap each line to the cheapest price among products with the same name across marts.
-      2) Group by mart, compute delivery per mart: 5 * distance_km + 5 * total_weight_kg.
-      3) Iteratively try moving single items across marts to reduce total; stop when no improvement.
-      4) Tie-break equal totals by lower ETA (sum of mart ETAs).
-      Constraints:
-      - Only approved marts and in-stock products are considered.
-      - If item.weight_kg not provided, use Product.unit_weight_kg.
+    Returns a plan grouped per mart with delivery charges, ETAs, and item images.
     """
-    data = request.data or {}
-    items = data.get("items", [])
-    allow_swaps = bool(data.get("allow_swaps", True))
-    address_id = data.get("address_id")
-
-    if not items:
-        print('optimize_basket: missing items in request', getattr(request, 'user', None), 'data=', data)
-        return Response({"error": "items are required"}, status=400)
-
-    # Resolve address + coords
     try:
-        addr, addr_lat, addr_long = _get_user_delivery_point(request.user, address_id=address_id)
-    except ValueError as e:
-        print('optimize_basket: address resolution failed:', str(e), 'user=', getattr(request, 'user', None), 'data=', data)
-        return Response({"error": str(e)}, status=400)
+        data = request.data or {}
+        items = data.get("items", [])
+        allow_swaps = bool(data.get("allow_swaps", True))
+        address_id = data.get("address_id")
 
-    # Load products referenced in items
-    product_map: Dict[int, models.Product] = {}
-    for it in items:
-        pid = it.get("product_id")
-        if pid is None:
-            print('optimize_basket: item missing product_id, item=', it)
-            continue
-        p = models.Product.objects.filter(pk=pid).select_related("mart").first()
-        if p:
-            product_map[pid] = p
-        else:
-            print(f'optimize_basket: product not found for product_id={pid}')
+        if not isinstance(items, list) or not items:
+            return Response({"error": "items are required"}, status=400)
 
-    # Build candidate sets per name (approved & in-stock only)
-    variants_by_name: Dict[str, List[models.Product]] = {}
-    if allow_swaps:
-        names = list({p.name for p in product_map.values()})
-        for nm in names:
-            variants_by_name[nm] = list(
-                models.Product.objects.filter(
-                    name=nm, mart__approved=True, stock__gt=0
-                ).select_related("mart")
-            )
+        # 1) Resolve user address + coordinates (will geocode if needed)
+        try:
+            addr, addr_lat, addr_long = _get_user_delivery_point(request.user, address_id=address_id)
+        except ValueError as e:
+            # e.g., "Address could not be geocoded..."
+            return Response({"error": str(e)}, status=400)
 
-    # Prepare working items with weight fallback to product.unit_weight_kg
-    work_items: List[Dict] = []
-    for it in items:
-        pid = it.get("product_id")
-        qty = int(it.get("quantity", 1))
-        base_product = product_map.get(pid)
-        if not base_product:
-            continue
-
-        # compute per-unit weight (request override > product default > 1.0)
-        if it.get("weight_kg") is not None:
-            weight_each = float(it.get("weight_kg"))
-        else:
-            uw = getattr(base_product, "unit_weight_kg", None)
-            weight_each = float(uw) if uw is not None else 1.0
-
-        # skip unapproved/OOS base product unless we can swap
-        if (not getattr(base_product.mart, "approved", True)) or (getattr(base_product, "stock", 0) <= 0):
-            if allow_swaps:
-                alts = variants_by_name.get(base_product.name, [])
-                if not alts:
-                    continue
-                base_product = min(alts, key=lambda pr: float(pr.price))
-            else:
+        # 2) Load products referenced in items (map id -> product)
+        product_map: Dict[int, models.Product] = {}
+        for it in items:
+            pid = it.get("product_id")
+            if pid is None:
                 continue
+            p = models.Product.objects.filter(pk=pid).select_related("mart").first()
+            if p:
+                product_map[pid] = p
 
-        chosen = base_product
+        if not product_map:
+            return Response({"error": "No valid products found for given items"}, status=400)
+
+        # 3) Build swap candidates by product name (approved & in stock only)
+        variants_by_name: Dict[str, List[models.Product]] = {}
         if allow_swaps:
-            cand = variants_by_name.get(base_product.name) or [base_product]
-            if cand:
-                chosen = min(cand, key=lambda pr: float(pr.price))
+            for nm in {p.name for p in product_map.values()}:
+                variants_by_name[nm] = list(
+                    models.Product.objects.filter(
+                        name=nm, mart__approved=True, stock__gt=0
+                    ).select_related("mart")
+                )
 
-        work_items.append({
-            "name": chosen.name,
-            "product": chosen,
-            "qty": qty,
-            "weight_total": weight_each * qty,
-            "unit_price": float(chosen.price),
-        })
-
-    # Helper: totals for assignment (mart_id -> items)
-    def compute_totals(assign: Dict[int, List[Dict]]) -> Dict:
-        total_price = 0.0
-        total_delivery = 0.0
-        total_eta = 0
-        mart_breakdown = []
-
-        for mart_id, its in assign.items():
-            if not its:
-                continue
-            mart = its[0]["product"].mart
-            # safety: ignore non-approved marts
-            if not getattr(mart, "approved", True):
+        # 4) Normalize working items (quantity, per-unit weight, pick cheapest variant if allowed)
+        work_items: List[Dict] = []
+        for it in items:
+            pid = it.get("product_id")
+            qty = int(it.get("quantity", 1))
+            base = product_map.get(pid)
+            if not base:
                 continue
 
-            mart_weight = sum(i["weight_total"] for i in its)
-            items_price = sum(i["unit_price"] * i["qty"] for i in its)
-            dist = distance_km_between(addr_lat, addr_long, float(mart.location_lat), float(mart.location_long))
-            delivery = calculate_delivery_charge(dist, mart_weight)
-            eta = eta_minutes_from_distance(dist)
+            # per-unit weight: request override > product.unit_weight_kg > 1.0 default
+            if it.get("weight_kg") is not None:
+                weight_each = float(it.get("weight_kg"))
+            else:
+                uw = getattr(base, "unit_weight_kg", None)
+                weight_each = float(uw) if uw is not None else 1.0
 
-            total_price += items_price
-            total_delivery += delivery
-            total_eta += eta
+            # skip non-approved or OOS, unless we can swap
+            if (not getattr(base.mart, "approved", True)) or (getattr(base, "stock", 0) <= 0):
+                if allow_swaps:
+                    alts = variants_by_name.get(base.name, [])
+                    if not alts:
+                        continue
+                    base = min(alts, key=lambda pr: float(pr.price))
+                else:
+                    continue
 
-            mart_breakdown.append({
-                "mart_id": mart.mart_id,
-                "mart_name": mart.name,
-                "distance_km": round(dist, 3),
-                "eta_min": eta,
-                "weight_kg": round(mart_weight, 3),
-                "delivery_charge": int(delivery),
-                "items": [
-                    {
-                        "product_id": i["product"].product_id,
-                        "name": i["name"],
-                        "qty": i["qty"],
-                        "unit_price": i["unit_price"],
-                        "line_price": round(i["unit_price"] * i["qty"], 2),
-                    } for i in its
-                ]
+            chosen = base
+            if allow_swaps:
+                cand = variants_by_name.get(base.name) or [base]
+                if cand:
+                    chosen = min(cand, key=lambda pr: float(pr.price))
+
+            work_items.append({
+                "name": chosen.name,
+                "product": chosen,
+                "qty": qty,
+                "weight_total": weight_each * qty,
+                "unit_price": float(chosen.price),
             })
 
-        grand_total = round(total_price + total_delivery, 2)
-        return {
-            "items_price": round(total_price, 2),
-            "delivery_total": int(total_delivery),
-            "grand_total": grand_total,
-            "eta_total_min": int(total_eta),
-            "marts": mart_breakdown,
-        }
+        if not work_items:
+            return Response({"error": "No purchasable items (all out-of-stock or unapproved)"}, status=400)
 
-    # Initial assignment: only approved marts
-    assignment: Dict[int, List[Dict]] = {}
-    for wi in work_items:
-        if getattr(wi["product"].mart, "approved", True):
-            m_id = wi["product"].mart_id
-            assignment.setdefault(m_id, []).append(wi)
+        # 5) Helper to compute totals for a mart assignment
+        def compute_totals(assign: Dict[int, List[Dict]]) -> Dict:
+            total_price = 0.0
+            total_delivery = 0.0
+            total_eta = 0
+            mart_breakdown = []
 
-    best_plan = compute_totals(assignment)
+            for mart_id, its in assign.items():
+                if not its:
+                    continue
+                mart = its[0]["product"].mart
+                if not getattr(mart, "approved", True):
+                    continue
 
-    # Greedy improvements by moving items between approved marts (ETA tie-break)
-    if allow_swaps:
-        improved = True
-        max_iters = 50
-        iters = 0
-        while improved and iters < max_iters:
-            improved = False
-            iters += 1
+                mart_weight = sum(i["weight_total"] for i in its)
+                items_price = sum(i["unit_price"] * i["qty"] for i in its)
+                dist = distance_km_between(addr_lat, addr_long, float(mart.location_lat), float(mart.location_long))
+                delivery = calculate_delivery_charge(dist, mart_weight)
+                eta = eta_minutes_from_distance(dist)
 
-            for src_mart_id, items_list in list(assignment.items()):
-                for itm in list(items_list):
-                    name = itm["name"]
+                total_price += items_price
+                total_delivery += delivery
+                total_eta += eta
 
-                    candidates = [
-                        pr for pr in variants_by_name.get(name, [])
-                        if getattr(pr.mart, "approved", True) and getattr(pr, "stock", 0) > 0
+                # Attach image_url (ensuring product has one)
+                mart_breakdown.append({
+                    "mart_id": mart.mart_id,
+                    "mart_name": mart.name,
+                    "distance_km": round(dist, 3),
+                    "eta_min": eta,
+                    "weight_kg": round(mart_weight, 3),
+                    "delivery_charge": int(delivery),
+                    "items": [
+                        {
+                            "product_id": i["product"].product_id,
+                            "name": i["name"],
+                            "qty": i["qty"],
+                            "unit_price": i["unit_price"],
+                            "line_price": round(i["unit_price"] * i["qty"], 2),
+                            "image_url": ensure_product_image(i["product"]).image_url,
+                        }
+                        for i in its
                     ]
-                    if not candidates:
-                        continue
+                })
 
-                    for cand_prod in candidates:
-                        tgt_mart_id = cand_prod.mart_id
-                        if tgt_mart_id == src_mart_id:
+            grand_total = round(total_price + total_delivery, 2)
+            return {
+                "items_price": round(total_price, 2),
+                "delivery_total": int(total_delivery),
+                "grand_total": grand_total,
+                "eta_total_min": int(total_eta),
+                "marts": mart_breakdown,
+            }
+
+        # 6) Initial assignment (group by mart, only approved)
+        assignment: Dict[int, List[Dict]] = {}
+        for wi in work_items:
+            if getattr(wi["product"].mart, "approved", True):
+                m_id = wi["product"].mart_id
+                assignment.setdefault(m_id, []).append(wi)
+
+        if not assignment:
+            return Response({"error": "No approved marts available for these items"}, status=400)
+
+        best_plan = compute_totals(assignment)
+
+        # 7) Greedy improvements: move items across marts to reduce grand_total (break ties by ETA)
+        if allow_swaps:
+            improved = True
+            iters = 0
+            while improved and iters < 50:
+                improved = False
+                iters += 1
+
+                for src_mart_id, items_list in list(assignment.items()):
+                    # Make a snapshot of list since we may mutate
+                    for itm in list(items_list):
+                        name = itm["name"]
+                        candidates = [
+                            pr for pr in variants_by_name.get(name, [])
+                            if getattr(pr.mart, "approved", True) and getattr(pr, "stock", 0) > 0
+                        ]
+                        if not candidates:
                             continue
 
-                        # simulate move
-                        # guard against the case where src_mart_id was popped earlier
-                        if src_mart_id not in assignment or itm not in assignment.get(src_mart_id, []):
-                            # item was already moved/removed in a previous iteration — skip
-                            continue
-                        assignment[src_mart_id].remove(itm)
-                        if not assignment.get(src_mart_id):
-                            assignment.pop(src_mart_id, None)
+                        for cand_prod in candidates:
+                            tgt_mart_id = cand_prod.mart_id
+                            if tgt_mart_id == src_mart_id:
+                                continue
 
-                        moved = dict(itm)
-                        moved["product"] = cand_prod
-                        moved["unit_price"] = float(cand_prod.price)
-                        assignment.setdefault(tgt_mart_id, []).append(moved)
+                            # ensure current still present (could be moved in same pass)
+                            if src_mart_id not in assignment or itm not in assignment.get(src_mart_id, []):
+                                continue
 
-                        new_plan = compute_totals(assignment)
+                            # simulate move
+                            assignment[src_mart_id].remove(itm)
+                            if not assignment.get(src_mart_id):
+                                assignment.pop(src_mart_id, None)
 
-                        if (new_plan["grand_total"] < best_plan["grand_total"]) or (
-                            new_plan["grand_total"] == best_plan["grand_total"]
-                            and new_plan["eta_total_min"] < best_plan["eta_total_min"]
-                        ):
-                            best_plan = new_plan
-                            improved = True
-                        else:
-                            # revert
-                            assignment[tgt_mart_id].remove(moved)
-                            if not assignment[tgt_mart_id]:
-                                assignment.pop(tgt_mart_id, None)
-                            assignment.setdefault(src_mart_id, []).append(itm)
+                            moved = dict(itm)
+                            moved["product"] = cand_prod
+                            moved["unit_price"] = float(cand_prod.price)
+                            assignment.setdefault(tgt_mart_id, []).append(moved)
 
-                if src_mart_id in assignment and not assignment[src_mart_id]:
-                    assignment.pop(src_mart_id, None)
+                            new_plan = compute_totals(assignment)
 
-    return Response({
-        "address": {
-            "id": addr.address_id,
-            "summary": f"{addr.line1}, {addr.city}",
-            "lat": addr_lat,
-            "long": addr_long,
-        },
-        "items_count": sum(i["qty"] for bucket in assignment.values() for i in bucket),
-        "result": best_plan,
-        "notes": "Pricing: ₹5/km + ₹5/kg. ETA tie-break when costs are equal. Approved marts & in-stock only.",
-    })
+                            if (new_plan["grand_total"] < best_plan["grand_total"]) or (
+                                new_plan["grand_total"] == best_plan["grand_total"]
+                                and new_plan["eta_total_min"] < best_plan["eta_total_min"]
+                            ):
+                                best_plan = new_plan
+                                improved = True
+                            else:
+                                # revert
+                                assignment[tgt_mart_id].remove(moved)
+                                if not assignment.get(tgt_mart_id):
+                                    assignment.pop(tgt_mart_id, None)
+                                assignment.setdefault(src_mart_id, []).append(itm)
 
+                    if src_mart_id in assignment and not assignment[src_mart_id]:
+                        assignment.pop(src_mart_id, None)
+
+        # 8) Always return a Response
+        return Response({
+            "address": {
+                "id": addr.address_id,
+                "summary": f"{addr.line1}, {addr.city}" + (f" {addr.pincode}" if addr.pincode else ""),
+                "lat": addr_lat,
+                "long": addr_long,
+            },
+            "items_count": sum(i["qty"] for bucket in assignment.values() for i in bucket),
+            "result": best_plan,
+            "notes": "Pricing: ₹5/km + ₹5/kg. ETA tie-break when costs are equal. Approved marts & in-stock only.",
+        })
+
+    except Exception as e:
+        # Final safety net so we never return None
+        print("optimize_basket crashed:", e)
+        return Response({"error": f"Internal error: {e.__class__.__name__}"}, status=500)
 
 # --------------------- Orders ---------------------
 @api_view(["POST"])
@@ -691,7 +717,6 @@ def optimize_basket(request):
 @permission_classes([IsAuthenticated])
 def create_order(request):
     data = request.data or {}
-    # request data inspected during debugging previously; removed verbose logging
     items = data.get("items", [])
     address_id = data.get("address_id")
     address_obj_payload = data.get("address")
@@ -727,7 +752,7 @@ def create_order(request):
         full_addr = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
         lat, lng = get_lat_long_from_address(full_addr)
         if not (lat and lng):
-            return Response({"error": "Address could not be geocoded"}, status=400)
+            return Response({"error": "Address could not be geocoded. Please include City, State, and a 6-digit PIN code."}, status=400)
         addr.location_lat, addr.location_long = lat, lng
         addr.save(update_fields=["location_lat", "location_long"])
 
@@ -857,7 +882,7 @@ def create_order_from_plan(request):
         full_addr = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
         lat, lng = get_lat_long_from_address(full_addr)
         if not (lat and lng):
-            return Response({"error": "Address could not be geocoded"}, status=400)
+            return Response({"error": "Address could not be geocoded. Please include City, State, and a 6-digit PIN code."}, status=400)
         addr.location_lat, addr.location_long = lat, lng
         addr.save(update_fields=["location_lat", "location_long"])
 
@@ -875,7 +900,6 @@ def create_order_from_plan(request):
                 if not mart_obj:
                     # skip this mart
                     continue
-
 
                 # collect valid products first; skip mart if nothing valid
                 total_cost = Decimal("0")
@@ -949,7 +973,6 @@ def create_order_from_plan(request):
                     "total_weight_kg": round(total_weight, 3),
                 })
                 created.append(payload)
-                # serializer introspection removed to avoid noisy debug output in tests/logs
 
     except Exception as e:
         # rollback will occur automatically because of transaction.atomic()
@@ -1003,3 +1026,13 @@ def parse_shopping_list(request):
         return Response({"error": "text required"}, status=400)
     items = [i.strip() for i in text.replace("\n", ",").split(",") if i.strip()]
     return Response({"items": items})
+
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def list_orders(request):
+    qs = models.Order.objects.filter(user=request.user).order_by("-created_at")
+    # optimize queries
+    qs = qs.select_related("delivery_address").prefetch_related("orderitem_set__product__mart")
+    data = serializers.OrderSerializer(qs, many=True).data
+    return Response(data)
