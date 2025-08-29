@@ -17,6 +17,10 @@ urlpatterns = [
     path("auth/request-otp/", views.request_otp, name="auth-request-otp"),
     path("auth/verify-otp/", views.verify_otp, name="auth-verify-otp"),
     path("auth/me/", views.me, name="auth-me"),
+    # api/urls.py
+    path("auth/forgot-password/", views.forgot_password, name="auth-forgot-password"),
+    path("auth/reset-password/", views.reset_password, name="auth-reset-password"),
+
 
     # --- Addresses ---
     path("addresses/", views.addresses, name="addresses"),

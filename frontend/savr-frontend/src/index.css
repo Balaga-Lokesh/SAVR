@@ -71,40 +71,27 @@ All colors MUST be HSL.
   }
 
   .dark {
-    --background: 225 25% 8%;
-    --foreground: 210 40% 95%;
+    --background: 210 45% 20%;      /* #1B3C53 navy */
+    --foreground: 30 50% 96%;       /* #F9F3EF cream */
 
-    --card: 225 25% 10%;
-    --card-foreground: 210 40% 95%;
+    --card: 210 35% 25%;            /* slate card #2a4d67ish */
+    --card-foreground: 30 50% 96%;
 
-    --popover: 225 25% 10%;
-    --popover-foreground: 210 40% 95%;
+    --primary: 210 30% 40%;         /* #456882 slate blue */
+    --primary-foreground: 30 50% 96%;
 
-    --primary: 142 76% 45%;
-    --primary-foreground: 0 0% 100%;
-    --primary-glow: 142 76% 55%;
+    --secondary: 28 20% 75%;        /* #D2C1B6 light beige */
+    --secondary-foreground: 210 45% 20%;
 
-    --secondary: 25 95% 60%;
-    --secondary-foreground: 0 0% 100%;
+    --muted: 210 35% 30%;
+    --muted-foreground: 28 20% 75%;
 
-    --muted: 225 25% 15%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 210 30% 40%;
+    --accent-foreground: 30 50% 96%;
 
-    --accent: 217 91% 65%;
-    --accent-foreground: 0 0% 100%;
-
-    --success: 120 65% 50%;
-    --success-foreground: 0 0% 100%;
-
-    --warning: 38 92% 55%;
-    --warning-foreground: 0 0% 100%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-
-    --border: 225 25% 20%;
-    --input: 225 25% 20%;
-    --ring: 142 76% 45%;
+    --border: 210 35% 28%;
+    --input: 210 35% 28%;
+    --ring: 210 30% 40%;
 
     /* Dark mode specific colors */
     --fresh-green: 142 76% 45%;
@@ -115,12 +102,12 @@ All colors MUST be HSL.
     /* Dark gradients */
     --gradient-primary: linear-gradient(135deg, hsl(var(--fresh-green)), hsl(142 76% 55%));
     --gradient-savings: linear-gradient(135deg, hsl(var(--savings-orange)), hsl(25 95% 70%));
-    --gradient-hero: linear-gradient(135deg, hsl(var(--fresh-green)), hsl(var(--premium-blue)));
+    --gradient-hero: linear-gradient(135deg, hsl(210 45% 20%), hsl(210 30% 40%));
     --gradient-card: linear-gradient(145deg, hsl(225 25% 12%), hsl(225 25% 15%));
     
     /* Dark shadows */
     --shadow-soft: 0 4px 20px -4px hsl(225 25% 5% / 0.3);
-    --shadow-card: 0 8px 32px -8px hsl(225 25% 5% / 0.4);
+    --shadow-card: 0 8px 32px -8px hsl(210 45% 10% / 0.5);
     --shadow-button: 0 4px 16px -4px hsl(var(--fresh-green) / 0.4);
 
     --sidebar-background: 240 5.9% 10%;

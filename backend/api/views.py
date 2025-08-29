@@ -272,7 +272,84 @@ def verify_otp(request):
         "username": user.username,
     })
 
+# --- Forgot / Reset Password ---
+def _six_digit_code():
+    # always 6 digits, left-padded with zeros
+    return f"{secrets.randbelow(1_000_000):06d}"
 
+@api_view(["POST"])
+def forgot_password(request):
+    """
+    Body: { "email": "user@example.com" }
+    Creates a 6-digit reset code (purpose='reset') and emails it in a link.
+    """
+    data = request.data or {}
+    email = (data.get("email") or "").strip()
+    if not email:
+        return Response({"error": "email required"}, status=400)
+
+    # Privacy: always respond 200 even if user doesn't exist
+    if models.User.objects.filter(email=email).exists():
+        code = _six_digit_code()  # fits a CharField(max_length=6)
+        # store it as OTPCode (purpose='reset')
+        models.OTPCode.objects.create(destination=email, code=code, purpose="reset")
+
+        # Build link the frontend can open: /reset-password/<code>
+        fe_base = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
+        reset_link = f"{fe_base}/reset-password/{code}"
+
+        try:
+            send_mail(
+                "SAVR Password Reset",
+                f"Use this link to reset your password: {reset_link}\n"
+                f"Or enter this code on the reset page: {code}\n\n"
+                f"If you didn't request this, you can ignore it.",
+                getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@savr.local"),
+                [email],
+            )
+        except Exception as e:
+            # Don’t hard-fail the API if email transport has issues
+            print(f"[forgot_password] send_mail failed: {e}")
+
+    return Response({"sent": True})
+
+@api_view(["POST"])
+def reset_password(request):
+    """
+    Body: { "token": "<6-digit-code>", "new_password": "..." }
+    Uses OTPCode(purpose='reset', code=token).
+    """
+    data = request.data or {}
+    token = (data.get("token") or "").strip()
+    new_password = (data.get("new_password") or "")
+
+    if not token or not new_password:
+        return Response({"error": "token and new_password required"}, status=400)
+    if len(new_password) < 8:
+        return Response({"error": "Password too short"}, status=400)
+
+    try:
+        otp = models.OTPCode.objects.filter(
+            purpose="reset", code=token, used=False
+        ).latest("created_at")
+    except models.OTPCode.DoesNotExist:
+        return Response({"error": "Invalid or expired reset token"}, status=400)
+
+    if timezone.now() > otp.expires_at:
+        return Response({"error": "Reset token expired"}, status=400)
+
+    user = models.User.objects.filter(email=otp.destination).first()
+    if not user:
+        return Response({"error": "User not found"}, status=404)
+
+    # Update password (adapt to your field names/auth)
+    from django.contrib.auth.hashers import make_password
+    user.password_hash = make_password(new_password)
+    user.save(update_fields=["password_hash"])
+
+    otp.used = True
+    otp.save(update_fields=["used"])
+    return Response({"reset": True})
 # ---------- NEW: auth/me ----------
 @api_view(["GET"])
 @authentication_classes([CustomTokenAuthentication])

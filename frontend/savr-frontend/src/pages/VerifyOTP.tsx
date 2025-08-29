@@ -14,40 +14,32 @@ const VerifyOTP = () => {
   const apiBase = rawApiBase.replace(/\/+$/, "");
 
   const dest = sessionStorage.getItem("otp_dest") || "";
-  const tempToken = sessionStorage.getItem("temp_token") || "";
 
   const handleVerify = async () => {
-    if (!code) {
-      setError("Please enter the OTP code");
-      return;
-    }
-    if (code.length < 4) {
-      setError("Enter the full OTP");
-      return;
-    }
+    if (!code) return setError("Please enter the OTP code");
+    if (code.length < 4) return setError("Enter the full OTP");
 
-    setLoading(true);
-    setError("");
-    setInfo("");
+    setLoading(true); setError(""); setInfo("");
     try {
-      const body: Record<string, string> = { code };
-      if (tempToken) body.temp_token = tempToken;
-      else body.destination = dest;
-
       const res = await fetch(`${apiBase}/api/v1/auth/verify-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          destination: dest,
+          code,
+          purpose: "login",
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
 
-      if (res.ok) {
-        sessionStorage.setItem("authToken", data?.token || "authenticated");
+      if (res.ok && data?.token) {
+        sessionStorage.setItem("authToken", data.token);
         sessionStorage.setItem("mfaVerified", "true");
         sessionStorage.removeItem("otp_dest");
-        sessionStorage.removeItem("temp_token");
-        navigate("/shopping-list"); // ⬅️ ensure this matches your route
+
+        setInfo("OTP verified! Redirecting…");
+        setTimeout(() => navigate("/shopping-list"), 800);
       } else {
         setError(data?.error || "Invalid or expired code");
       }
@@ -59,19 +51,16 @@ const VerifyOTP = () => {
   };
 
   const handleResend = async () => {
-    setError("");
-    setInfo("");
-    if (!dest && !tempToken) {
-      setError("Missing destination or session. Please login again.");
+    setError(""); setInfo("");
+    if (!dest) {
+      setError("Missing email session. Please login again.");
       return;
     }
     try {
       const res = await fetch(`${apiBase}/api/v1/auth/request-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          tempToken ? { temp_token: tempToken, purpose: "login" } : { destination: dest, purpose: "login" }
-        ),
+        body: JSON.stringify({ destination: dest, purpose: "login" }),
       });
       if (res.ok) setInfo("OTP resent. Please check your inbox/device.");
       else setError("Failed to resend OTP");
@@ -89,11 +78,16 @@ const VerifyOTP = () => {
         </p>
 
         {error && <p className="text-destructive mb-4">{error}</p>}
-        {info && <p className="text-muted-foreground mb-4">{info}</p>}
+        {info && <p className="text-primary mb-4">{info}</p>}
 
         <label className="block mb-6">
           <div className="text-sm mb-1">OTP Code</div>
-          <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Enter code" maxLength={6} />
+          <Input
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="Enter code"
+            maxLength={6}
+          />
         </label>
 
         <div className="flex gap-2">
@@ -103,6 +97,11 @@ const VerifyOTP = () => {
           <Button type="button" variant="ghost" onClick={handleResend}>
             Resend
           </Button>
+        </div>
+
+        <div className="text-sm flex items-center justify-between mt-4">
+          <button className="underline" onClick={() => navigate("/login")}>Back to login</button>
+          <button className="underline" onClick={() => navigate("/forgot-password")}>Forgot password?</button>
         </div>
       </div>
     </div>
