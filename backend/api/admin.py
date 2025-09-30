@@ -3,6 +3,8 @@ from django.utils.html import format_html
 from . import models
 import requests
 from bs4 import BeautifulSoup
+from . import models
+import os
 
 # ------------------- Helper Function -------------------
 def fetch_google_image(query):
@@ -75,3 +77,9 @@ class OrderAdmin(admin.ModelAdmin):
 class DeliveryAdmin(admin.ModelAdmin):
     list_display = ('delivery_id', 'order', 'partner', 'status')
     list_filter = ('status',)
+
+@admin.register(models.Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = ("payment_id", "provider", "amount", "currency", "status", "order")
+    search_fields = ("provider_order_id", "provider_payment_id")
+    list_filter = ("provider", "status")

@@ -3,10 +3,12 @@ import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import AuthedHeader from "@/components/AuthedHeader";
+import { CartProvider } from "./contexts/Cartcontext";
+import { ProductsProvider } from "./contexts/ProductsContext";
 
-import Index from "@/pages/Index";        // if your Index is at src/Index.tsx, change to "@/Index"
+import Index from "@/pages/Index";
 import Login from "@/pages/Login";
-import UserProfile from "./pages/UserProfile";
+import UserProfile from "@/pages/UserProfile";
 import Addresses from "@/pages/Addresses";
 import ShoppingList from "@/components/ShoppingList";
 import OptimizedCart from "@/components/OptimizedCart";
@@ -14,7 +16,6 @@ import CheckoutFlow from "@/components/CheckoutFlow";
 import VerifyOTP from "@/pages/VerifyOTP";
 import NotFound from "@/pages/NotFound";
 import ForgotPassword from "@/pages/ForgotPassword";
-import ResetPassword from "@/pages/ResetPassword";
 
 const RequireAuth: React.FC<{ children: React.ReactElement }> = ({ children }) => {
   const authed = Boolean(sessionStorage.getItem("authToken"));
@@ -22,7 +23,6 @@ const RequireAuth: React.FC<{ children: React.ReactElement }> = ({ children }) =
 };
 
 const App: React.FC = () => {
-  // minimal local state to satisfy component props
   const [cart, setCart] = React.useState<any[]>([]);
   const [products, setProducts] = React.useState<any[]>([]);
 
@@ -30,7 +30,8 @@ const App: React.FC = () => {
   React.useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch("/api/v1/products/with-images/");
+        const apiBase = ((import.meta as any).env?.VITE_API_BASE || "http://127.0.0.1:8000").replace(/\/+$/, "");
+        const res = await fetch(`${apiBase}/api/v1/products/with-images/`);
         if (!res.ok) return;
         const data = await res.json();
         Array.isArray(data) && setProducts(data);
@@ -48,6 +49,16 @@ const App: React.FC = () => {
 
   const handleOrderComplete = () => setCart([]);
 
+  function App() {
+  return (
+    <CartProvider>
+      <ProductsProvider>
+        {/* your routes and app content */}
+      </ProductsProvider>
+    </CartProvider>
+  );
+}
+
   return (
     <ThemeProvider defaultTheme="system" storageKey="savr-theme">
       <AuthedHeader cartCount={cart.length} onCartClick={handleNavigateToCart} />
@@ -57,25 +68,10 @@ const App: React.FC = () => {
         <Route path="/login" element={<Login />} />
         <Route path="/verify-otp" element={<VerifyOTP />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/reset-password/:token" element={<ResetPassword />} />
 
-        {/* Protected routes (must be logged in) */}
-        <Route
-          path="/profile"
-          element={
-            <RequireAuth>
-              <UserProfile />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/addresses"
-          element={
-            <RequireAuth>
-              <Addresses />
-            </RequireAuth>
-          }
-        />
+        {/* Protected routes */}
+        <Route path="/profile" element={<RequireAuth><UserProfile /></RequireAuth>} />
+        <Route path="/addresses" element={<RequireAuth><Addresses /></RequireAuth>} />
         <Route
           path="/shopping-list"
           element={
@@ -89,15 +85,7 @@ const App: React.FC = () => {
             </RequireAuth>
           }
         />
-        <Route
-          path="/cart"
-          element={
-            <RequireAuth>
-              {/* If your OptimizedCart expects products too, pass them as prop */}
-              <OptimizedCart cart={cart} setCart={setCart} /* products={products} */ />
-            </RequireAuth>
-          }
-        />
+        <Route path="/cart" element={<RequireAuth><OptimizedCart cart={cart} setCart={setCart} /></RequireAuth>} />
         <Route
           path="/checkout"
           element={

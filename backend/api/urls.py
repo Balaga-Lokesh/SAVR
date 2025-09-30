@@ -49,4 +49,9 @@ urlpatterns = [
 
     # --- Router endpoints ---
     path("", include(router.urls)),
+
+    # add to urlpatterns in api/urls.py
+path("payments/razorpay/create-order/", views.create_razorpay_order, name="payments-razorpay-create"),
+path("payments/razorpay/verify/", views.verify_razorpay_payment, name="payments-razorpay-verify"),
+path("payments/razorpay/webhook/", views.razorpay_webhook, name="payments-razorpay-webhook"),
 ]

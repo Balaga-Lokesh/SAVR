@@ -1,9 +1,18 @@
 # views.py
-
+import os
+import hmac
 import secrets
 import random
 import math
 import re
+import hashlib
+import json
+import requests
+from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings
+from rest_framework import status
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from decimal import Decimal
 from typing import Iterable, Optional, Tuple, List, Dict
 
@@ -30,6 +39,7 @@ from geopy.distance import geodesic
 from .authentication import CustomTokenAuthentication
 from . import models, serializers
 from .utils import fetch_product_image
+from .serializers import PaymentSerializer
 
 # --------------------- Index ---------------------
 def index(request):
@@ -793,17 +803,43 @@ def optimize_basket(request):
 @authentication_classes([CustomTokenAuthentication])
 @permission_classes([IsAuthenticated])
 def create_order(request):
+    """
+    Creates a single Order in DB from a list of items (non-plan flow).
+    Body:
+      {
+        "items": [{ "product_id": X, "quantity": N, "weight_kg": opt? }, ...],
+        "address_id": 123,                # or "address": { ... } to create
+        "contact_number": "9999999999",
+        "payment_id": <optional local Payment.payment_id>,   # numeric
+        "payment_method": "COD" | "online" (optional),
+        "amount": <optional explicit total>  # optional override
+      }
+
+    Behaviour:
+      - Validates address and geocodes if necessary.
+      - Creates Order + OrderItem rows, selects a best mart (nearest approved),
+        computes delivery charge (your existing rules), and stores snapshot.
+      - If `payment_id` passed and Payment exists, links it to the created Order;
+        if Payment.status == "success", mark order.status = "confirmed".
+      - Returns serialized order payload.
+    """
     data = request.data or {}
     items = data.get("items", [])
     address_id = data.get("address_id")
     address_obj_payload = data.get("address")
     contact_number = data.get("contact_number")
+    payment_id = data.get("payment_id")  # optional
+    payment_method = (data.get("payment_method") or "").lower() or None
+    explicit_amount = data.get("amount", None)
 
     if not items:
         return Response({"error": "items are required"}, status=400)
-    if not address_id or not contact_number:
-        return Response({"error": "address_id and contact_number are required"}, status=400)
+    if not (address_id or address_obj_payload):
+        return Response({"error": "address_id or address object is required"}, status=400)
+    if not contact_number:
+        return Response({"error": "contact_number is required"}, status=400)
 
+    # Resolve / create address
     addr = None
     if address_id:
         try:
@@ -811,20 +847,20 @@ def create_order(request):
         except models.Address.DoesNotExist:
             return Response({"error": "Address not found"}, status=404)
     elif address_obj_payload:
-        # create an address object for the user from provided payload
+        ap = address_obj_payload
         addr = models.Address.objects.create(
             user=request.user,
-            line1=address_obj_payload.get('line1', ''),
-            line2=address_obj_payload.get('line2'),
-            city=address_obj_payload.get('city', 'Visakhapatnam'),
-            state=address_obj_payload.get('state', 'Andhra Pradesh'),
-            pincode=address_obj_payload.get('pincode'),
-            contact_phone=address_obj_payload.get('contact_phone'),
-            location_lat=address_obj_payload.get('location_lat'),
-            location_long=address_obj_payload.get('location_long'),
+            line1=ap.get('line1', ''),
+            line2=ap.get('line2'),
+            city=ap.get('city', 'Visakhapatnam'),
+            state=ap.get('state', 'Andhra Pradesh'),
+            pincode=ap.get('pincode'),
+            contact_phone=ap.get('contact_phone'),
+            location_lat=ap.get('location_lat'),
+            location_long=ap.get('location_long'),
         )
 
-    # ensure address has coordinates
+    # Ensure address coordinates exist (geocode if necessary)
     if not (addr.location_lat and addr.location_long):
         full_addr = ", ".join(filter(None, [addr.line1, addr.line2, addr.city, addr.state, addr.pincode]))
         lat, lng = get_lat_long_from_address(full_addr)
@@ -833,81 +869,126 @@ def create_order(request):
         addr.location_lat, addr.location_long = lat, lng
         addr.save(update_fields=["location_lat", "location_long"])
 
-    total_cost = Decimal("0")
-    total_weight = 0.0
-    order = models.Order.objects.create(user=request.user, total_cost=0, status="pending")
+    # Build order inside a transaction
+    try:
+        with transaction.atomic():
+            # create a skeleton order (total_cost will be set later)
+            order = models.Order.objects.create(user=request.user, total_cost=0, status="pending")
 
-    marts_in_order = set()
-    for item in items:
-        pid = item.get("product_id")
-        qty = int(item.get("quantity", 1))
-        product = models.Product.objects.filter(pk=pid).select_related("mart").first()
-        if not product:
-            continue
+            total_cost = Decimal("0")
+            total_weight = 0.0
+            marts_in_order = set()
 
-        # per-unit weight: request override > product.unit_weight_kg > 1.0
-        if item.get("weight_kg") is not None:
-            weight_each = float(item.get("weight_kg"))
-        else:
-            uw = getattr(product, "unit_weight_kg", None)
-            weight_each = float(uw) if uw is not None else 1.0
+            # validate items, add OrderItem rows
+            for item in items:
+                pid = item.get("product_id")
+                qty = int(item.get("quantity", item.get("qty", 1)))
+                if not pid or qty <= 0:
+                    continue
 
-        total_cost += Decimal(qty) * product.price
-        total_weight += weight_each * qty
-        marts_in_order.add(product.mart_id)
+                product = models.Product.objects.filter(pk=pid).select_related("mart").first()
+                if not product:
+                    # skip unknown products silently (mirror previous behavior)
+                    continue
 
-        models.OrderItem.objects.create(
-            order=order,
-            product=product,
-            mart=product.mart,
-            quantity=qty,
-            price_at_purchase=product.price,
-        )
+                # per-unit weight: request override > product.unit_weight_kg > 1.0
+                if item.get("weight_kg") is not None:
+                    weight_each = float(item.get("weight_kg"))
+                else:
+                    uw = getattr(product, "unit_weight_kg", None)
+                    weight_each = float(uw) if uw is not None else 1.0
 
-    # choose nearest approved mart among candidates
-    candidate_marts = models.Mart.objects.filter(mart_id__in=list(marts_in_order), approved=True)
-    if not candidate_marts.exists():
-        candidate_marts = models.Mart.objects.filter(approved=True)
+                line_price = (Decimal(qty) * product.price)
+                total_cost += line_price
+                total_weight += weight_each * qty
+                marts_in_order.add(product.mart_id)
 
-    best = None
-    best_dist = None
-    for m in candidate_marts:
-        d = distance_km_between(
-            float(addr.location_lat), float(addr.location_long),
-            float(m.location_lat), float(m.location_long)
-        )
-        if best is None or d < best_dist:
-            best = m
-            best_dist = d
+                models.OrderItem.objects.create(
+                    order=order,
+                    product=product,
+                    mart=product.mart,
+                    quantity=qty,
+                    price_at_purchase=product.price,
+                )
 
-    chosen_mart = best
-    delivery_charge = calculate_delivery_charge(best_dist if best_dist is not None else 0.0, total_weight)
-    total_cost += Decimal(delivery_charge)
+            # If explicit amount override provided, prefer it for total calculation baseline
+            if explicit_amount is not None:
+                try:
+                    total_cost = Decimal(str(explicit_amount))
+                except Exception:
+                    pass
 
-    # attach delivery address and snapshot for historical traceability
-    if addr:
-        order.delivery_address = addr
-        try:
-            order.delivery_address_snapshot = f"{addr.line1}, {addr.city}, {addr.state} {addr.pincode}"
-            order.delivery_address_lat = addr.location_lat
-            order.delivery_address_long = addr.location_long
-        except Exception:
-            pass
-    order.total_cost = total_cost
-    order.save()
+            # choose nearest approved mart among candidate marts; fallback to any approved mart
+            candidate_marts = models.Mart.objects.filter(mart_id__in=list(marts_in_order), approved=True)
+            if not candidate_marts.exists():
+                candidate_marts = models.Mart.objects.filter(approved=True)
 
-    payload = serializers.OrderSerializer(order).data
-    payload.update({
-        "delivery_address": f"{addr.line1}, {addr.city}",
-        "contact_number": contact_number,
-        "chosen_mart_id": chosen_mart.mart_id if chosen_mart else None,
-        "chosen_mart_name": chosen_mart.name if chosen_mart else None,
-        "distance_km": round(best_dist, 3) if best_dist is not None else None,
-        "delivery_charge": delivery_charge,
-        "total_weight_kg": round(total_weight, 3),
-    })
-    return Response(payload)
+            chosen_mart = None
+            best_dist = None
+            for m in candidate_marts:
+                try:
+                    d = distance_km_between(
+                        float(addr.location_lat), float(addr.location_long),
+                        float(m.location_lat), float(m.location_long)
+                    )
+                except Exception:
+                    d = 0.0
+                if chosen_mart is None or d < best_dist:
+                    chosen_mart = m
+                    best_dist = d
 
+            # compute delivery charge using your existing rule
+            delivery_charge = calculate_delivery_charge(best_dist if best_dist is not None else 0.0, total_weight)
+            total_cost += Decimal(delivery_charge)
+
+            # attach delivery address snapshot and coordinates
+            if addr:
+                order.delivery_address = addr
+                try:
+                    order.delivery_address_snapshot = f"{addr.line1}, {addr.city}, {addr.state} {addr.pincode}"
+                    order.delivery_address_lat = addr.location_lat
+                    order.delivery_address_long = addr.location_long
+                except Exception:
+                    pass
+
+            order.total_cost = total_cost
+            order.save()
+
+            # Link Payment if payment_id supplied
+            if payment_id:
+                try:
+                    p = models.Payment.objects.filter(payment_id=payment_id).first()
+                except Exception:
+                    p = None
+
+                if p:
+                    p.order = order
+                    p.save(update_fields=["order", "updated_at"])
+                    # If payment already successful, update order status
+                    if getattr(p, "status", "") == "success":
+                        order.status = "confirmed"
+                        order.save(update_fields=["status", "updated_at"])
+
+            # If client explicitly chose payment_method == 'cod', we can keep 'pending' status
+            # Optionally, you can store payment_method on order if you add such a field.
+            # Prepare payload similar to other order responses you return elsewhere.
+            payload = serializers.OrderSerializer(order).data
+            payload.update({
+                "delivery_address": f"{addr.line1}, {addr.city}",
+                "contact_number": contact_number,
+                "chosen_mart_id": chosen_mart.mart_id if chosen_mart else None,
+                "chosen_mart_name": chosen_mart.name if chosen_mart else None,
+                "distance_km": round(best_dist, 3) if best_dist is not None else None,
+                "delivery_charge": int(delivery_charge),
+                "total_weight_kg": round(total_weight, 3),
+            })
+
+            return Response(payload, status=201)
+
+    except Exception as e:
+        # transaction will roll back automatically
+        print("create_order failed:", e)
+        return Response({"error": f"Order creation failed: {str(e)}"}, status=500)
 
 @api_view(["POST"])
 @authentication_classes([CustomTokenAuthentication])
@@ -1113,3 +1194,169 @@ def list_orders(request):
     qs = qs.select_related("delivery_address").prefetch_related("orderitem_set__product__mart")
     data = serializers.OrderSerializer(qs, many=True).data
     return Response(data)
+
+# ---------- Razorpay endpoints ----------
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def create_razorpay_order(request):
+    """
+    POST body: { amount: 499.00, currency: "INR", receipt: "optional", notes: {...} }
+    Returns: { key_id, razorpay_order_id, payment_id, amount, currency }
+    """
+    data = request.data or {}
+    amount = data.get("amount")
+    currency = data.get("currency", "INR")
+    receipt = data.get("receipt")
+    notes = data.get("notes", {})
+
+    if amount is None:
+        return Response({"error": "amount is required"}, status=400)
+
+    try:
+        # create local Payment row (amount in main units, e.g. 499.00)
+        payment = models.Payment.objects.create(
+            order=None,
+            provider="razorpay",
+            amount=Decimal(str(amount)),
+            currency=currency,
+            status="pending",
+            raw_payload={"notes": notes},
+        )
+
+        # convert to paise (integer)
+        amount_paise = int(round(float(amount) * 100))
+
+        key_id = getattr(settings, "RAZORPAY_KEY_ID", os.environ.get("RAZORPAY_KEY_ID"))
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", os.environ.get("RAZORPAY_KEY_SECRET"))
+        if not key_id or not key_secret:
+            return Response({"error": "Razorpay credentials not configured"}, status=500)
+
+        payload = {
+            "amount": amount_paise,
+            "currency": currency,
+            "receipt": receipt or f"savr_rcpt_{payment.payment_id}",
+            "payment_capture": 1,
+            "notes": notes or {},
+        }
+
+        r = requests.post("https://api.razorpay.com/v1/orders", auth=(key_id, key_secret), json=payload, timeout=10)
+        if r.status_code not in (200, 201):
+            # store error payload and mark payment failed
+            payment.raw_payload = {"rzp_error": r.text}
+            payment.status = "failed"
+            payment.save(update_fields=["raw_payload", "status", "updated_at"])
+            return Response({"error": "Failed to create razorpay order", "detail": r.text}, status=500)
+
+        rz = r.json()
+        provider_order_id = rz.get("id")
+        payment.provider_order_id = provider_order_id
+        payment.raw_payload = {"razorpay_order": rz}
+        payment.save(update_fields=["provider_order_id", "raw_payload", "updated_at"])
+
+        return Response({
+            "key_id": key_id,
+            "razorpay_order_id": provider_order_id,
+            "payment_id": payment.payment_id,
+            "amount": float(payment.amount),
+            "currency": payment.currency,
+        })
+    except Exception as exc:
+        return Response({"error": "server_error", "detail": str(exc)}, status=500)
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def verify_razorpay_payment(request):
+    """
+    Client posts after checkout success:
+    { payment_id, razorpay_payment_id, razorpay_order_id, razorpay_signature }
+    Verifies HMAC and updates Payment.status.
+    """
+    data = request.data or {}
+    payment_id = data.get("payment_id")
+    rz_payment_id = data.get("razorpay_payment_id")
+    rz_order_id = data.get("razorpay_order_id")
+    rz_signature = data.get("razorpay_signature")
+
+    if not all([payment_id, rz_payment_id, rz_order_id, rz_signature]):
+        return Response({"error": "missing fields"}, status=400)
+
+    try:
+        payment = models.Payment.objects.filter(payment_id=payment_id).first()
+        if not payment:
+            return Response({"error": "payment not found"}, status=404)
+
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", os.environ.get("RAZORPAY_KEY_SECRET"))
+        if not key_secret:
+            return Response({"error": "Razorpay secret not configured"}, status=500)
+
+        msg = f"{rz_order_id}|{rz_payment_id}"
+        computed = hmac.new(key_secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(computed, rz_signature):
+            payment.raw_payload = {"verify_attempt": data, "computed_signature": computed}
+            payment.status = "failed"
+            payment.save(update_fields=["raw_payload", "status", "updated_at"])
+            return Response({"error": "signature_verification_failed"}, status=400)
+
+        # success
+        payment.provider_payment_id = rz_payment_id
+        payment.status = "success"
+        payment.raw_payload = {"verify_payload": data}
+        payment.save(update_fields=["provider_payment_id", "status", "raw_payload", "updated_at"])
+
+        return Response({"verified": True, "payment_id": payment.payment_id})
+    except Exception as exc:
+        return Response({"error": "server_error", "detail": str(exc)}, status=500)
+
+
+@csrf_exempt
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def razorpay_webhook(request):
+    """
+    Razorpay webhook receiver. Verifies X-Razorpay-Signature using RAZORPAY_WEBHOOK_SECRET.
+    """
+    try:
+        body_bytes = request.body
+        if not body_bytes:
+            return Response({"error": "empty_body"}, status=400)
+
+        signature_header = request.META.get("HTTP_X_RAZORPAY_SIGNATURE", "") or request.META.get("X-Razorpay-Signature", "")
+        webhook_secret = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", os.environ.get("RAZORPAY_WEBHOOK_SECRET"))
+        if not webhook_secret:
+            return Response({"error": "webhook secret not configured"}, status=500)
+
+        computed_sig = hmac.new(webhook_secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(computed_sig, signature_header):
+            return Response({"error": "invalid_signature"}, status=400)
+
+        payload = json.loads(body_bytes.decode("utf-8"))
+        ev = payload.get("event")
+        data = payload.get("payload", {})
+
+        if ev and ev.startswith("payment."):
+            pinfo = data.get("payment", {}).get("entity", {})
+            rz_payment_id = pinfo.get("id")
+            rz_order_id = pinfo.get("order_id")
+            status = pinfo.get("status")
+
+            payment = None
+            if rz_payment_id:
+                payment = models.Payment.objects.filter(provider_payment_id=rz_payment_id).first()
+            if not payment and rz_order_id:
+                payment = models.Payment.objects.filter(provider_order_id=rz_order_id).first()
+
+            if payment:
+                if status in ("captured", "authorized", "completed"):
+                    payment.status = "success"
+                elif status in ("failed",):
+                    payment.status = "failed"
+                payment.raw_payload = payload
+                payment.save(update_fields=["status", "raw_payload", "updated_at"])
+
+        return Response({"ok": True})
+    except Exception as exc:
+        return Response({"error": "server_error", "detail": str(exc)}, status=500)

@@ -317,3 +317,31 @@ class UserToken(models.Model):
 
     def __str__(self):
         return f"{self.user.username} · {self.token_key[:8]}…"
+
+# <- add near other models in api/models.py
+
+class Payment(models.Model):
+    PAYMENT_STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("success", "Success"),
+        ("failed", "Failed"),
+        ("refunded", "Refunded"),
+    ]
+
+    payment_id = models.BigAutoField(primary_key=True)
+    order = models.ForeignKey("Order", null=True, blank=True, on_delete=models.SET_NULL, related_name="payments")
+    provider = models.CharField(max_length=50, default="razorpay")  # e.g. razorpay, cod, stripe
+    provider_order_id = models.CharField(max_length=255, null=True, blank=True)  # razorpay order id
+    provider_payment_id = models.CharField(max_length=255, null=True, blank=True)  # razorpay payment id
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=10, default="INR")
+    status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending")
+    raw_payload = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "payments"
+
+    def __str__(self):
+        return f"Payment #{self.payment_id} {self.provider} {self.status}"

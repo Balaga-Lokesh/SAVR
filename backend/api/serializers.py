@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from . import models
 from .models import (
     User, Admin, Mart, Product, Offer, Review, Basket,
     Order, OrderItem, DeliveryPartner, Delivery, AnalyticsLog, Address
@@ -110,3 +111,10 @@ class AnalyticsLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = AnalyticsLog
         fields = "__all__"
+
+class PaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Payment
+        fields = "__all__"
+
+
