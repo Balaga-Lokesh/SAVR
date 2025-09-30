@@ -3,7 +3,7 @@ import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import AuthedHeader from "@/components/AuthedHeader";
-import { CartProvider } from "./contexts/Cartcontext";
+import { CartProvider } from "./contexts/CartContext";
 import { ProductsProvider } from "./contexts/ProductsContext";
 
 import Index from "@/pages/Index";
