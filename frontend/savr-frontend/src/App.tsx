@@ -49,55 +49,49 @@ const App: React.FC = () => {
 
   const handleOrderComplete = () => setCart([]);
 
-  function App() {
-  return (
-    <CartProvider>
-      <ProductsProvider>
-        {/* your routes and app content */}
-      </ProductsProvider>
-    </CartProvider>
-  );
-}
-
   return (
     <ThemeProvider defaultTheme="system" storageKey="savr-theme">
-      <AuthedHeader cartCount={cart.length} onCartClick={handleNavigateToCart} />
-      <Routes>
-        {/* Public routes */}
-        <Route path="/" element={<Index />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/verify-otp" element={<VerifyOTP />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
+      <CartProvider>
+        <ProductsProvider>
+          <AuthedHeader cartCount={cart.length} onCartClick={handleNavigateToCart} />
+          <Routes>
+            {/* Public routes */}
+            <Route path="/" element={<Index />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/verify-otp" element={<VerifyOTP />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
 
-        {/* Protected routes */}
-        <Route path="/profile" element={<RequireAuth><UserProfile /></RequireAuth>} />
-        <Route path="/addresses" element={<RequireAuth><Addresses /></RequireAuth>} />
-        <Route
-          path="/shopping-list"
-          element={
-            <RequireAuth>
-              <ShoppingList
-                products={products}
-                cart={cart}
-                setCart={setCart}
-                onNavigateToCart={handleNavigateToCart}
-              />
-            </RequireAuth>
-          }
-        />
-        <Route path="/cart" element={<RequireAuth><OptimizedCart cart={cart} setCart={setCart} /></RequireAuth>} />
-        <Route
-          path="/checkout"
-          element={
-            <RequireAuth>
-              <CheckoutFlow onOrderComplete={handleOrderComplete} cart={cart} setCart={setCart} />
-            </RequireAuth>
-          }
-        />
+            {/* Protected routes */}
+            <Route path="/profile" element={<RequireAuth><UserProfile /></RequireAuth>} />
+            <Route path="/addresses" element={<RequireAuth><Addresses /></RequireAuth>} />
+            <Route
+              path="/shopping-list"
+              element={
+                <RequireAuth>
+                  <ShoppingList
+                    products={products}
+                    cart={cart}
+                    setCart={setCart}
+                    onNavigateToCart={handleNavigateToCart}
+                  />
+                </RequireAuth>
+              }
+            />
+            <Route path="/cart" element={<RequireAuth><OptimizedCart cart={cart} setCart={setCart} /></RequireAuth>} />
+            <Route
+              path="/checkout"
+              element={
+                <RequireAuth>
+                  <CheckoutFlow onOrderComplete={handleOrderComplete} cart={cart} setCart={setCart} />
+                </RequireAuth>
+              }
+            />
 
-        {/* 404 */}
-        <Route path="*" element={<NotFound />} />
-      </Routes>
+            {/* 404 */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </ProductsProvider>
+      </CartProvider>
     </ThemeProvider>
   );
 };
