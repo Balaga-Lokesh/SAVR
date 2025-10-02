@@ -17,16 +17,13 @@ urlpatterns = [
     path("auth/request-otp/", views.request_otp, name="auth-request-otp"),
     path("auth/verify-otp/", views.verify_otp, name="auth-verify-otp"),
     path("auth/me/", views.me, name="auth-me"),
-    # api/urls.py
     path("auth/forgot-password/", views.forgot_password, name="auth-forgot-password"),
     path("auth/reset-password/", views.reset_password, name="auth-reset-password"),
-
 
     # --- Addresses ---
     path("addresses/", views.addresses, name="addresses"),
     path("addresses/<int:address_id>/", views.address_detail, name="address-detail"),
     path("addresses/<int:address_id>/default/", views.set_default_address, name="address-set-default"),
-    # alias to match frontend calls:
     path("addresses/<int:address_id>/set-default/", views.set_default_address, name="address-set-default-legacy"),
 
     # --- Products ---
@@ -38,7 +35,6 @@ urlpatterns = [
 
     # multi-mart orders
     path("orders/create-from-plan/", views.create_order_from_plan, name="create-order-from-plan"),
-    # alias to match frontend calls:
     path("orders/from-plan/", views.create_order_from_plan, name="orders-from-plan"),
 
     path("orders/create/", views.create_order, name="create-order"),
@@ -50,8 +46,8 @@ urlpatterns = [
     # --- Router endpoints ---
     path("", include(router.urls)),
 
-    # add to urlpatterns in api/urls.py
-path("payments/razorpay/create-order/", views.create_razorpay_order, name="payments-razorpay-create"),
-path("payments/razorpay/verify/", views.verify_razorpay_payment, name="payments-razorpay-verify"),
-path("payments/razorpay/webhook/", views.razorpay_webhook, name="payments-razorpay-webhook"),
+    # --- Razorpay endpoints ---
+    path("payments/razorpay/create-order/", views.create_razorpay_order, name="payments-razorpay-create-order"),
+    path("payments/razorpay/verify/", views.verify_razorpay_payment, name="payments-razorpay-verify"),
+    path("payments/razorpay/webhook/", views.razorpay_webhook, name="payments-razorpay-webhook"),
 ]

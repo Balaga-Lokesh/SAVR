@@ -1,4 +1,5 @@
 # views.py
+import stripe
 import os
 import hmac
 import secrets
@@ -11,6 +12,7 @@ import requests
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from rest_framework import status
+from rest_framework.response import Response
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from decimal import Decimal
@@ -40,6 +42,13 @@ from .authentication import CustomTokenAuthentication
 from . import models, serializers
 from .utils import fetch_product_image
 from .serializers import PaymentSerializer
+
+STRIPE_SECRET_KEY = getattr(settings, "STRIPE_SECRET_KEY", os.environ.get("STRIPE_SECRET_KEY"))
+STRIPE_PUBLISHABLE_KEY = getattr(settings, "STRIPE_PUBLISHABLE_KEY", os.environ.get("STRIPE_PUBLISHABLE_KEY"))
+STRIPE_WEBHOOK_SECRET = getattr(settings, "STRIPE_WEBHOOK_SECRET", os.environ.get("STRIPE_WEBHOOK_SECRET"))
+
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
 # --------------------- Index ---------------------
 def index(request):
@@ -1264,7 +1273,7 @@ def create_razorpay_order(request):
     except Exception as exc:
         return Response({"error": "server_error", "detail": str(exc)}, status=500)
 
-
+# --- Razorpay verify endpoint ---
 @api_view(["POST"])
 @authentication_classes([CustomTokenAuthentication])
 @permission_classes([IsAuthenticated])
@@ -1284,79 +1293,68 @@ def verify_razorpay_payment(request):
         return Response({"error": "missing fields"}, status=400)
 
     try:
+        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", os.environ.get("RAZORPAY_KEY_SECRET"))
+        generated = hmac.new(
+            key_secret.encode(),
+            f"{rz_order_id}|{rz_payment_id}".encode(),
+            hashlib.sha256
+        ).hexdigest()
+
         payment = models.Payment.objects.filter(payment_id=payment_id).first()
         if not payment:
-            return Response({"error": "payment not found"}, status=404)
+            return Response({"error": "Payment not found"}, status=404)
 
-        key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", os.environ.get("RAZORPAY_KEY_SECRET"))
-        if not key_secret:
-            return Response({"error": "Razorpay secret not configured"}, status=500)
-
-        msg = f"{rz_order_id}|{rz_payment_id}"
-        computed = hmac.new(key_secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
-
-        if not hmac.compare_digest(computed, rz_signature):
-            payment.raw_payload = {"verify_attempt": data, "computed_signature": computed}
+        if hmac.compare_digest(generated, rz_signature):
+            payment.status = "success"
+            payment.provider_payment_id = rz_payment_id
+            payment.save(update_fields=["status", "provider_payment_id", "updated_at"])
+            return Response({"success": True})
+        else:
             payment.status = "failed"
-            payment.save(update_fields=["raw_payload", "status", "updated_at"])
-            return Response({"error": "signature_verification_failed"}, status=400)
-
-        # success
-        payment.provider_payment_id = rz_payment_id
-        payment.status = "success"
-        payment.raw_payload = {"verify_payload": data}
-        payment.save(update_fields=["provider_payment_id", "status", "raw_payload", "updated_at"])
-
-        return Response({"verified": True, "payment_id": payment.payment_id})
-    except Exception as exc:
-        return Response({"error": "server_error", "detail": str(exc)}, status=500)
+            payment.save(update_fields=["status", "updated_at"])
+            return Response({"success": False, "error": "Invalid signature"}, status=400)
+    except Exception as e:
+        return Response({"error": "server_error", "detail": str(e)}, status=500)
 
 
+# --- Razorpay webhook handler ---
 @csrf_exempt
-@api_view(["POST"])
-@permission_classes([AllowAny])
 def razorpay_webhook(request):
-    """
-    Razorpay webhook receiver. Verifies X-Razorpay-Signature using RAZORPAY_WEBHOOK_SECRET.
-    """
-    try:
-        body_bytes = request.body
-        if not body_bytes:
-            return Response({"error": "empty_body"}, status=400)
+    if request.method != "POST":
+        return JsonResponse({"error": "method not allowed"}, status=405)
 
-        signature_header = request.META.get("HTTP_X_RAZORPAY_SIGNATURE", "") or request.META.get("X-Razorpay-Signature", "")
-        webhook_secret = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", os.environ.get("RAZORPAY_WEBHOOK_SECRET"))
-        if not webhook_secret:
-            return Response({"error": "webhook secret not configured"}, status=500)
+    body = request.body
+    signature = request.headers.get("X-Razorpay-Signature")
+    secret = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", os.environ.get("RAZORPAY_WEBHOOK_SECRET"))
 
-        computed_sig = hmac.new(webhook_secret.encode(), body_bytes, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(computed_sig, signature_header):
-            return Response({"error": "invalid_signature"}, status=400)
+    if not secret or not signature:
+        return JsonResponse({"error": "Missing webhook secret or signature"}, status=400)
 
-        payload = json.loads(body_bytes.decode("utf-8"))
-        ev = payload.get("event")
-        data = payload.get("payload", {})
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        return JsonResponse({"error": "Invalid signature"}, status=400)
 
-        if ev and ev.startswith("payment."):
-            pinfo = data.get("payment", {}).get("entity", {})
-            rz_payment_id = pinfo.get("id")
-            rz_order_id = pinfo.get("order_id")
-            status = pinfo.get("status")
+    event = json.loads(body.decode())
+    ev_type = event.get("event")
 
-            payment = None
-            if rz_payment_id:
-                payment = models.Payment.objects.filter(provider_payment_id=rz_payment_id).first()
-            if not payment and rz_order_id:
-                payment = models.Payment.objects.filter(provider_order_id=rz_order_id).first()
+    if ev_type == "payment.captured":
+        pay = event["payload"]["payment"]["entity"]
+        rz_payment_id = pay["id"]
+        amt = pay["amount"] / 100.0
+        # update Payment row
+        p = models.Payment.objects.filter(provider_payment_id=rz_payment_id).first()
+        if p:
+            p.status = "success"
+            p.amount = amt
+            p.raw_payload = pay
+            p.save(update_fields=["status", "amount", "raw_payload", "updated_at"])
+    elif ev_type == "payment.failed":
+        pay = event["payload"]["payment"]["entity"]
+        rz_payment_id = pay["id"]
+        p = models.Payment.objects.filter(provider_payment_id=rz_payment_id).first()
+        if p:
+            p.status = "failed"
+            p.raw_payload = pay
+            p.save(update_fields=["status", "raw_payload", "updated_at"])
 
-            if payment:
-                if status in ("captured", "authorized", "completed"):
-                    payment.status = "success"
-                elif status in ("failed",):
-                    payment.status = "failed"
-                payment.raw_payload = payload
-                payment.save(update_fields=["status", "raw_payload", "updated_at"])
-
-        return Response({"ok": True})
-    except Exception as exc:
-        return Response({"error": "server_error", "detail": str(exc)}, status=500)
+    return JsonResponse({"ok": True})
