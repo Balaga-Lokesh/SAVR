@@ -69,19 +69,17 @@ const ShoppingList: React.FC<ShoppingListProps> = ({ onOptimize }) => {
   };
 
   const getCategoryColor = (category: string) => {
+    // Map legacy color classes to theme tokens so badges follow ThemeProvider
     const colors = {
       Groceries: "bg-fresh text-white",
-      Dairy: "bg-blue-100 text-blue-800",
-      Meat: "bg-red-100 text-red-800",
-      Vegetables: "bg-green-100 text-green-800",
-      Fruits: "bg-yellow-100 text-yellow-800",
-      Beverages: "bg-purple-100 text-purple-800",
-      Household: "bg-gray-100 text-gray-800",
+      Dairy: "bg-secondary/10 text-foreground",
+      Meat: "bg-destructive/10 text-destructive",
+      Vegetables: "bg-success/10 text-success",
+      Fruits: "bg-primary/10 text-primary",
+      Beverages: "bg-muted/10 text-muted-foreground",
+      Household: "bg-card text-foreground",
     };
-    return (
-      colors[category as keyof typeof colors] ||
-      "bg-gray-100 text-gray-800"
-    );
+    return colors[category as keyof typeof colors] || "bg-card text-foreground";
   };
 
   return (

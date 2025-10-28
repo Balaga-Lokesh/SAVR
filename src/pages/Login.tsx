@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiUrl } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useNavigate } from 'react-router-dom';
@@ -16,7 +17,7 @@ const Login = () => {
   const [otpCode, setOtpCode] = useState('');
   const navigate = useNavigate();
 
-  const apiBase = (import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8000';
+  const apiBase = apiUrl('');
 
   // Auto-detect location when on signup
   useEffect(() => {
@@ -39,7 +40,8 @@ const Login = () => {
       const res = await fetch(`${apiBase}/api/v1/auth/login/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        // backend expects `email` + `password` (or email-like identifier)
+        body: JSON.stringify({ email: email || username, password }),
       });
       const data = await res.json();
       if (res.ok) {

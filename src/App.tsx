@@ -13,7 +13,7 @@ import { ThemeToggle } from "./components/ui/ThemeToggle";
 const App = () => {
   return (
     <ThemeProvider defaultTheme="system" storageKey="savr-theme">
-      <div className="min-h-screen text-foreground bg-background dark:bg-slate-900 dark:text-white transition-colors duration-300">
+      <div className="min-h-screen text-foreground bg-background transition-colors duration-300">
         <ThemeToggle />
         <Routes>
           <Route path="/" element={<Index />} />

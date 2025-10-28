@@ -8,24 +8,25 @@ All colors MUST be HSL.
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 225 25% 15%;
+  /* Light theme - user palette: #FAF1E6, #FDFAF6, #E4EFE7, #99BC85 */
+  --background: 33.06 66.10% 94.12%;   /* #FAF1E6 */
+  --foreground: 220 12% 10%;            /* dark text for light theme */
 
-    --card: 0 0% 100%;
-    --card-foreground: 225 25% 15%;
+  --card: 33.36 64.30% 97.88%;         /* #FDFAF6 */
+  --card-foreground: 220 12% 10%;
 
     --popover: 0 0% 100%;
     --popover-foreground: 225 25% 15%;
 
-    --primary: 142 76% 36%;
-    --primary-foreground: 0 0% 100%;
-    --primary-glow: 142 76% 45%;
+  --primary: 98.30 29.00% 62.95%;   /* #99BC85 - accent green */
+  --primary-foreground: 210 14% 10%;
+  --primary-glow: 98.30 29.00% 56%;
 
-    --secondary: 25 95% 53%;
-    --secondary-foreground: 0 0% 100%;
+  --secondary: 136.70 25.40% 91.55%; /* #E4EFE7 - soft background/secondary */
+  --secondary-foreground: 210 14% 10%;
 
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
+  --muted: 45 20% 96%;
+  --muted-foreground: 220 9% 46%;
 
     --accent: 217 91% 60%;
     --accent-foreground: 0 0% 100%;
@@ -39,15 +40,25 @@ All colors MUST be HSL.
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 142 76% 36%;
+  --border: 45 18% 92%;
+  --input: 45 18% 92%;
+  --ring: 71 66% 76.86%;
+  /* Special accent used for header and shopping-list hover states */
+  --special: 45 100% 56%; /* warm amber for light theme */
+  --special-foreground: 210 14% 10%;
+  /* Success/Destructive tokens (green for +, red for -) */
+  --success: 98.30 29.00% 62.95%; /* #99BC85 */
+  --success-foreground: 210 14% 10%;
+  --destructive: 0 78% 56%; /* vivid red */
+  --destructive-foreground: 0 0% 100%;
+  /* Selected header/section color */
+  --selected: 98.30 29.00% 62.95%; /* #99BC85 for light theme */
 
     /* Shopping App Specific */
-    --fresh-green: 142 76% 36%;
-    --savings-orange: 25 95% 53%;
-    --premium-blue: 217 91% 60%;
-    --cart-purple: 259 94% 51%;
+  --fresh-green: 90 42% 63%;
+  --savings-orange: 71 66% 77%;
+  --premium-blue: 217 91% 60%;
+  --cart-purple: 259 94% 51%;
     
     /* Gradients */
     --gradient-primary: linear-gradient(135deg, hsl(var(--fresh-green)), hsl(var(--primary-glow)));
@@ -71,27 +82,38 @@ All colors MUST be HSL.
   }
 
   .dark {
-    --background: 210 45% 20%;      /* #1B3C53 navy */
-    --foreground: 30 50% 96%;       /* #F9F3EF cream */
+    /* Dark theme - user palette: #35374B, #344955, #50727B, #78A083 */
+    --background: 234.5 17.2% 25.1%;     /* #35374B */
+    --foreground: 220 16% 94%;           /* light foreground for contrast */
 
-    --card: 210 35% 25%;            /* slate card #2a4d67ish */
-    --card-foreground: 30 50% 96%;
+    --card: 201.8 24.1% 26.9%;           /* #344955 */
+    --card-foreground: 220 16% 94%;
 
-    --primary: 210 30% 40%;         /* #456882 slate blue */
-    --primary-foreground: 30 50% 96%;
+    --primary: 192.5 21.2% 39.8%;        /* #50727B */
+    --primary-foreground: 210 18% 10%;
 
-    --secondary: 28 20% 75%;        /* #D2C1B6 light beige */
-    --secondary-foreground: 210 45% 20%;
+    --secondary: 136.5 17.4% 54.9%;      /* #78A083 */
+    --secondary-foreground: 210 18% 10%;
 
-    --muted: 210 35% 30%;
-    --muted-foreground: 28 20% 75%;
+    --muted: 210 18% 28%;
+    --muted-foreground: 210 18% 82%;
 
-    --accent: 210 30% 40%;
+    --accent: 205.57 30.66% 39.02%;
     --accent-foreground: 30 50% 96%;
 
-    --border: 210 35% 28%;
-    --input: 210 35% 28%;
-    --ring: 210 30% 40%;
+    --border: 210 18% 26%;
+    --input: 210 18% 26%;
+    --ring: 205.57 30.66% 39.02%;
+  /* Special accent for dark theme header and shopping-list hover states */
+  --special: 12 68% 61%; /* coral-like in dark */
+  --special-foreground: 30 50% 96%;
+  /* Success/Destructive tokens (green for +, red for -) in dark */
+  --success: 98.30 29.00% 62.95%; /* keep green consistent */
+  --success-foreground: 30 50% 96%;
+  --destructive: 0 78% 56%;
+  --destructive-foreground: 0 0% 100%;
+  /* Selected header/section color in dark theme */
+  --selected: 24 45.49% 95.69%; /* #F9F3EF for dark theme */
 
     /* Dark mode specific colors */
     --fresh-green: 142 76% 45%;
@@ -128,5 +150,35 @@ All colors MUST be HSL.
 
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* Recharts theming: map chart primitives to design tokens so charts follow light/dark modes */
+  [data-chart] {
+    --recharts-tick-fill: hsl(var(--muted-foreground));
+    --recharts-grid-stroke: hsl(var(--border) / 0.5);
+    --recharts-reference-stroke: hsl(var(--border));
+    --recharts-sector-stroke: hsl(var(--card-foreground));
+  }
+
+  [data-chart] .recharts-cartesian-axis-tick_text {
+    fill: var(--recharts-tick-fill) !important;
+  }
+
+  [data-chart] .recharts-cartesian-grid_line,
+  [data-chart] .recharts-polar-grid_ {
+    stroke: var(--recharts-grid-stroke) !important;
+  }
+
+  [data-chart] .recharts-curve.recharts-tooltip-cursor,
+  [data-chart] .recharts-reference-line_ {
+    stroke: var(--recharts-reference-stroke) !important;
+  }
+
+  [data-chart] .recharts-dot {
+    stroke: transparent !important;
+  }
+
+  [data-chart] .recharts-sector {
+    stroke: var(--recharts-sector-stroke) !important;
   }
 }

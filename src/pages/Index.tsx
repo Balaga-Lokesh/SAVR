@@ -206,7 +206,7 @@ const Index = () => {
               </p>
               <Button 
                 onClick={handleStartShopping}
-                className="bg-white text-fresh hover:bg-white/90 shadow-button text-lg px-12 py-6 rounded-xl"
+                className="bg-card text-fresh hover:bg-card/90 shadow-button text-lg px-12 py-6 rounded-xl"
               >
                 <Sparkles className="mr-3 h-6 w-6" />
                 Get Started Now

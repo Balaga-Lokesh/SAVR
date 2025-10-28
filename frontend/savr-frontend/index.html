@@ -17,22 +17,23 @@
     <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
     <style>
       /* Theme gradients and transitions */
+      /* Root-level fallbacks map to the design tokens defined in index.css; keep minimal overrides here */
       :root{
-        --bg-grad-start: #f8fafc; /* light slate */
-        --bg-grad-end: #ffffff; /* white */
-        --fg: #0f172a; /* slate-900 */
-        --muted: rgba(15,23,42,0.7);
-        --toggle-bg: rgba(255,255,255,0.85);
-        --toggle-fg: #111827;
+        --bg-grad-start: hsl(var(--background));
+        --bg-grad-end: hsl(var(--card));
+        --fg: hsl(var(--foreground));
+        --muted: color-mix(in srgb, hsl(var(--muted-foreground)), black 30%);
+        --toggle-bg: color-mix(in srgb, hsl(var(--card)), white 85%);
+        --toggle-fg: hsl(var(--foreground));
       }
 
       html.dark{
-        --bg-grad-start: #0f172a; /* dark slate */
-        --bg-grad-end: #071029; /* near-black blue */
-        --fg: #e6eef8; /* light text */
-        --muted: rgba(230,238,248,0.75);
+        --bg-grad-start: hsl(var(--background));
+        --bg-grad-end: hsl(var(--card));
+        --fg: hsl(var(--foreground));
+        --muted: color-mix(in srgb, hsl(var(--muted-foreground)), white 30%);
         --toggle-bg: rgba(0,0,0,0.6);
-        --toggle-fg: #ffffff;
+        --toggle-fg: hsl(var(--primary-foreground));
       }
 
       /* Smooth scrolling and reduced-motion support */

@@ -40,9 +40,9 @@ const Index = () => {
               AI-Powered Shopping Assistant
             </Badge>
 
-            <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold mb-4 md:mb-6 leading-tight tracking-[-0.02em]">
+            <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold mb-4 md:mb-6 leading-tight tracking-[-0.02em] dark:text-white">
               Smart Shopping
-              <span className="bg-gradient-hero bg-clip-text text-transparent block">
+              <span className="bg-gradient-hero bg-clip-text text-transparent block dark:bg-none dark:text-white">
                 Made Simple
               </span>
             </h1>
@@ -56,7 +56,7 @@ const Index = () => {
               asChild
               className="bg-gradient-primary hover:opacity-90 shadow-button text-base md:text-lg px-10 md:px-12 py-5 md:py-6 rounded-xl transition-transform active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-offset-2"
             >
-              <Link to="/login" className="inline-flex items-center">
+              <Link to="/who" className="inline-flex items-center">
                 <ShoppingCart className="mr-3 h-5 w-5 md:h-6 md:w-6" />
                 Start Smart Shopping
               </Link>
@@ -69,7 +69,7 @@ const Index = () => {
             <img
               src={heroImage}
               alt="Smart shopping with fresh groceries"
-              className="mx-auto rounded-2xl shadow-card max-w-3xl md:max-w-4xl w-full ring-1 ring-black/5"
+                 className="mx-auto rounded-2xl shadow-card max-w-3xl md:max-w-4xl w-full ring-1 ring-border/10"
             />
           </div>
         </div>
@@ -232,11 +232,11 @@ const Index = () => {
               </p>
 
               {/* Secondary CTA — content unchanged */}
-              <Button
+                <Button
                 asChild
-                className="bg-white text-fresh hover:bg-white/90 shadow-button text-base md:text-lg px-10 md:px-12 py-5 md:py-6 rounded-xl transition-transform active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-offset-2"
+                className="bg-card text-fresh hover:bg-card/90 shadow-button text-base md:text-lg px-10 md:px-12 py-5 md:py-6 rounded-xl transition-transform active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-offset-2"
               >
-                <Link to="/login" className="inline-flex items-center">
+                <Link to="/who" className="inline-flex items-center">
                   <Sparkles className="mr-3 h-5 w-5 md:h-6 md:w-6" />
                   Get Started Now
                 </Link>

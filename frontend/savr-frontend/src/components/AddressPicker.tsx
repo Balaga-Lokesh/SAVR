@@ -12,22 +12,19 @@ interface Address {
 }
 
 interface Props {
+  selectedId?: number | null;
   onSelect: (addr: Address | null) => void;
   onAddNew: () => void;
 }
 
-const AddressPicker: React.FC<Props> = ({ onSelect, onAddNew }) => {
+const AddressPicker: React.FC<Props> = ({ selectedId, onSelect, onAddNew }) => {
   const [addresses, setAddresses] = useState<Address[] | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(selectedId ?? null);
 
   useEffect(() => {
     const fetchAddrs = async () => {
-      const token = sessionStorage.getItem("authToken");
-      if (!token) return setAddresses([]);
       try {
-        const r = await fetch("/api/v1/addresses/", {
-          headers: { Authorization: `Token ${token}` },
-        });
+        const r = await fetch("/api/v1/addresses/", { credentials: "include" });
         if (!r.ok) return setAddresses([]);
         const data = await r.json();
         const mapped = data.map((a: any) => ({
@@ -41,16 +38,28 @@ const AddressPicker: React.FC<Props> = ({ onSelect, onAddNew }) => {
         }));
         setAddresses(mapped);
         if (mapped.length > 0) {
-          setSelected(mapped[0].id);
-          onSelect(mapped[0]);
+          // prefer controlled selectedId if provided and found
+          const preferred = selectedId && mapped.find((m) => m.id === selectedId) ? selectedId : mapped[0].id;
+          setSelected(preferred);
+          const found = mapped.find((m) => m.id === preferred) || mapped[0];
+          onSelect(found);
         }
       } catch (e) {
         setAddresses([]);
       }
     };
     fetchAddrs();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // if parent controls selectedId, sync it when it changes or when addresses load
+  useEffect(() => {
+    if (!addresses || selectedId == null) return;
+    const found = addresses.find((a) => a.id === selectedId) || null;
+    if (found) {
+      setSelected(selectedId);
+      onSelect(found);
+    }
+  }, [selectedId, addresses]);
 
   const handleSelect = (id: number) => {
     setSelected(id);
@@ -67,7 +76,7 @@ const AddressPicker: React.FC<Props> = ({ onSelect, onAddNew }) => {
           {[1, 2].map((i) => (
             <div
               key={i}
-              className="h-14 bg-gray-100 dark:bg-gray-800 animate-pulse rounded-lg"
+              className="h-14 bg-card animate-pulse rounded-lg"
             />
           ))}
         </div>
@@ -83,7 +92,7 @@ const AddressPicker: React.FC<Props> = ({ onSelect, onAddNew }) => {
               className={`p-3 rounded-lg border text-left transition
                 ${
                   selected === a.id
-                    ? "border-blue-600 bg-blue-50 dark:bg-blue-950"
+                    ? "border-border bg-card/5"
                     : "border-gray-200 dark:border-gray-700 hover:border-blue-400"
                 }`}
             >
@@ -100,7 +109,7 @@ const AddressPicker: React.FC<Props> = ({ onSelect, onAddNew }) => {
         <button
           type="button"
           onClick={onAddNew}
-          className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border hover:bg-gray-50 dark:hover:bg-gray-800"
+          className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border hover:bg-muted/10"
         >
           <Plus className="h-4 w-4" />
           Add New Address

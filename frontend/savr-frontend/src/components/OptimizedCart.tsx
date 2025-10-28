@@ -48,7 +48,8 @@ const buildImageSrc = (raw?: string) => {
   const clean = String(raw).trim();
   if (!clean) return "";
   if (/^https?:\/\//i.test(clean)) return clean;
-  const base = (import.meta as any).env?.VITE_API_BASE || "http://127.0.0.1:8000";
+  const rawApiBase = (import.meta as any).env?.VITE_API_BASE || "";
+  const base = rawApiBase ? rawApiBase : "";
   const trimmedBase = String(base).replace(/\/+$/, "");
   const needsSlash = clean.startsWith("/") ? "" : "/";
   return `${trimmedBase}${needsSlash}${encodeURI(clean)}`;
@@ -73,7 +74,8 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
   const [imageOverrides, setImageOverrides] = useState<Record<number, string | undefined>>({});
   const [useBestPricePlan, setUseBestPricePlan] = useState(false);
 
-  const token = typeof window !== "undefined" ? sessionStorage.getItem("authToken") : null;
+
+  // Use cookie-based session, not sessionStorage token
 
   /** map product_id -> image_url from products list (base) + overrides from DB fetch */
   const productImageMap = useMemo(() => {
@@ -103,14 +105,12 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
       if (!url) need.add(ci.product_id);
     });
     if (need.size) Array.from(need).slice(0, 12).forEach(id => fetchImageFromDB(id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart, products]);
 
   useEffect(() => {
     const fetchMe = async () => {
-      if (!token) { navigate("/login"); return; }
       try {
-        const res = await fetch("/api/v1/auth/me/", { headers: { Authorization: `Token ${token}` } });
+        const res = await fetch("/api/v1/auth/me/", { credentials: "include" });
         if (res.ok) {
           const j = await res.json();
           setProfile(j);
@@ -119,23 +119,25 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
             setSelectedAddressId(j.default_address.id);
             setSelectedAddressSummary(`${j.default_address.line1 || ""}, ${j.default_address.city || ""} ${j.default_address.pincode || ""}`);
           }
+        } else if (res.status === 401) {
+          navigate("/login");
         }
       } catch (e) {
         console.warn("fetch /auth/me failed", e);
+        navigate("/login");
       }
     };
     fetchMe();
-  }, [token, navigate]);
+  }, [navigate]);
 
   useEffect(() => {
     if (!profile || !selectedAddressId) return;
     fetchOptimized(selectedAddressId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, cart, selectedAddressId]);
 
   const fetchOptimized = async (addressId: number) => {
-    if (!token) { navigate("/login"); return; }
-    if (!cart.length) { setData(null); return; }
+
+  if (!cart.length) { setData(null); return; }
 
     setLoading(true);
     setOptError(null);
@@ -147,9 +149,11 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
         address_id: addressId,
       };
 
+
       const res = await fetch("/api/v1/basket/optimize/", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Token ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
 
@@ -261,7 +265,11 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
 
   /** New: order single item */
   const orderSingleItem = async (mart_id: number, item: BackendItem) => {
-    if (!token) { navigate("/login"); return; }
+    // ensure user authenticated via cookie
+    try {
+      const me = await fetch('/api/v1/auth/me/', { credentials: 'include' });
+      if (!me.ok) { navigate('/login'); return; }
+    } catch (e) { navigate('/login'); return; }
     if (!selectedAddressId) { alert("Please select a delivery address"); setAddressModal(true); return; }
     if (!contactNumber?.trim()) { alert("Please add a contact number to proceed."); return; }
 
@@ -281,7 +289,8 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
 
       const res = await fetch("/api/v1/orders/from-plan/", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Token ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
       const json = await res.json().catch(() => ({}));
@@ -295,7 +304,11 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
   };
 
   const placeOrders = async () => {
-    if (!token) { navigate("/login"); return; }
+    // ensure user authenticated via cookie
+    try {
+      const me = await fetch('/api/v1/auth/me/', { credentials: 'include' });
+      if (!me.ok) { navigate('/login'); return; }
+    } catch (e) { navigate('/login'); return; }
     if (!selectedAddressId) { setAddressIssue("Please select a delivery address."); setAddressModal(true); return; }
     if (!contactNumber?.trim()) { alert("Please add a contact number to proceed."); return; }
 
@@ -303,24 +316,82 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
     if (!martsToUse.length) { alert("No plan available."); return; }
 
     try {
-      const res = await fetch("/api/v1/orders/from-plan/", {
+      // Compute amount to charge (use optimizer grand total if available)
+      const amount = Number((useBestPricePlan ? bestGrand : currentGrand) || 0);
+      if (isNaN(amount) || amount <= 0) throw new Error("Invalid amount to charge");
+
+      // 1) ask backend to create a razorpay order
+      const createRes = await fetch("/api/v1/payments/razorpay/create-order/", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Token ${token}` },
-        body: JSON.stringify({
-          plan: {
-            marts: martsToUse.map(m => ({
-              mart_id: m.mart_id,
-              items: m.items.map(it => ({ product_id: it.product_id, qty: it.qty }))
-            }))
-          },
-          address_id: selectedAddressId,
-          contact_number: contactNumber,
-        }),
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ amount, currency: "INR", receipt: `savr-optimize-${Date.now()}` })
       });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || "Order placement failed");
-      setCart([]);
-      alert("Orders created successfully!");
+      const createJson = await createRes.json().catch(() => ({}));
+      if (!createRes.ok) throw new Error(createJson?.error || "Failed to initiate payment");
+
+      const { key_id, razorpay_order_id, payment_id } = createJson;
+      if (!key_id || !razorpay_order_id || !payment_id) throw new Error("Invalid payment init response from server");
+
+      // 2) load Razorpay SDK
+      await new Promise<void>((resolve, reject) => {
+        if ((window as any).Razorpay) return resolve();
+        const s = document.createElement("script");
+        s.src = "https://checkout.razorpay.com/v1/checkout.js";
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error("Failed to load Razorpay SDK"));
+        document.head.appendChild(s);
+      });
+
+      // 3) open checkout
+      const options = {
+        key: key_id,
+        amount: Math.round(Number(amount) * 100),
+        currency: "INR",
+        name: "SAVR",
+        description: "Order payment",
+        order_id: razorpay_order_id,
+        handler: async function (response: any) {
+          try {
+            // verify payment on server
+            const verifyRes = await fetch("/api/v1/payments/razorpay/verify/", {
+              method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+              body: JSON.stringify({ payment_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_order_id: response.razorpay_order_id, razorpay_signature: response.razorpay_signature })
+            });
+            const verifyJson = await verifyRes.json().catch(() => ({}));
+            if (!verifyRes.ok) throw new Error(verifyJson?.error || "Payment verification failed");
+
+            // create orders from plan now that payment is verified
+            const orderRes = await fetch("/api/v1/orders/from-plan/", {
+              method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+              body: JSON.stringify({
+                plan: { marts: martsToUse.map(m => ({ mart_id: m.mart_id, items: m.items.map(it => ({ product_id: it.product_id, qty: it.qty })) })) },
+                address_id: selectedAddressId,
+                contact_number: contactNumber,
+                payment_id: payment_id,
+                amount,
+              })
+            });
+            const orderJson = await orderRes.json().catch(() => ({}));
+            if (!orderRes.ok) throw new Error(orderJson?.error || "Order creation failed after payment");
+
+            setCart([]);
+            alert("Orders created successfully!");
+          } catch (err: any) {
+            console.error("post-payment error", err);
+            alert(err?.message || "Payment succeeded but order finalization failed. Contact support.");
+          }
+        },
+        prefill: { contact: contactNumber },
+        notes: { address_id: selectedAddressId },
+  theme: { color: (function(){ const r = getComputedStyle(document.documentElement).getPropertyValue('--primary-foreground'); return r && r.trim() ? `hsl(${r.trim()})` : 'hsl(174 74% 43%)'; })() },
+      };
+      const rzp = new (window as any).Razorpay(options);
+      rzp.open();
     } catch (e: any) {
       console.error(e);
       alert(e.message || "Could not place orders");
@@ -354,7 +425,7 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
       {!cart.length && (
         <div className="w-full max-w-3xl mx-auto px-4 py-16 text-center">
           <h2 className="text-2xl font-semibold mb-3">Your cart is empty</h2>
-          <p className="text-gray-600 dark:text-gray-300 mb-6">Add items from the products page to see the optimized plan.</p>
+          <p className="text-muted-foreground mb-6">Add items from the products page to see the optimized plan.</p>
           <Button onClick={() => navigate("/shopping-list")} className="gap-2">
             <ArrowLeft className="h-4 w-4" /> Back to Products
           </Button>
@@ -364,19 +435,19 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
       {/* Loading skeleton block (when loading and no data) */}
       {loading && !data && cart.length > 0 && (
         <div className="max-w-6xl mx-auto px-4 py-10 space-y-6">
-          <div className="h-8 w-64 bg-gray-200 dark:bg-gray-800 animate-pulse rounded" />
+          <div className="h-8 w-64 bg-muted/10 animate-pulse rounded" />
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
-              {[1, 2].map((k) => <div key={k} className="h-64 bg-gray-100 dark:bg-gray-800 animate-pulse rounded-xl" />)}
+              {[1, 2].map((k) => <div key={k} className="h-64 bg-muted dark:bg-card animate-pulse rounded-xl" />)}
             </div>
-            <div className="h-64 bg-gray-100 dark:bg-gray-800 animate-pulse rounded-xl" />
+            <div className="h-64 bg-muted dark:bg-card animate-pulse rounded-xl" />
           </div>
         </div>
       )}
 
       {/* If there's an optimizer error show it */}
       {optError && (
-        <div className="max-w-3xl mx-auto p-3 bg-red-100 text-red-800 rounded">
+        <div className="max-w-3xl mx-auto p-3 bg-destructive/10 text-destructive-foreground rounded">
           <strong>Optimizer error:</strong> {optError}
         </div>
       )}
@@ -390,7 +461,7 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
               <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent mb-1">
                 Smart Cart
               </h2>
-              <p className="text-gray-600 dark:text-gray-300">
+              <p className="text-muted-foreground">
                 {totalItems} item{totalItems > 1 ? "s" : ""} • ETA ~ {data?.result?.eta_total_min ?? 0} mins
               </p>
             </div>
@@ -405,22 +476,22 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
           </div>
 
           {/* Plan chooser + comparison */}
-          <Card className="border-blue-600/50">
+          <Card className="border-border">
             <CardHeader className="pb-2">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <CardTitle className="flex items-center gap-2">
                   <ShoppingCart className="h-5 w-5" /> Choose your plan
                 </CardTitle>
-                <div className="inline-flex rounded-xl overflow-hidden border">
+                <div className="inline-flex rounded-xl overflow-hidden border border-border">
                   <button
                     onClick={() => setUseBestPricePlan(false)}
-                    className={`px-3 py-1.5 text-sm ${!useBestPricePlan ? "bg-blue-600 text-white" : "bg-white dark:bg-gray-900"}`}
+                    className={`px-3 py-1.5 text-sm ${!useBestPricePlan ? "bg-primary text-primary-foreground" : "bg-card text-foreground"}`}
                   >
                     Optimizer Plan
                   </button>
                   <button
                     onClick={() => setUseBestPricePlan(true)}
-                    className={`px-3 py-1.5 text-sm ${useBestPricePlan ? "bg-blue-600 text-white" : "bg-white dark:bg-gray-900"}`}
+                    className={`px-3 py-1.5 text-sm ${useBestPricePlan ? "bg-primary text-primary-foreground" : "bg-card text-foreground"}`}
                   >
                     Best-Price Plan
                   </button>
@@ -429,27 +500,27 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className={`rounded-lg p-3 border ${!useBestPricePlan ? "border-blue-600" : ""}`}>
-                  <div className="text-sm text-gray-500">Optimizer Plan</div>
+                <div className={`rounded-lg p-3 border border-border`}>
+                  <div className="text-sm text-muted-foreground">Optimizer Plan</div>
                   <div className="mt-1 text-xs">Items: <strong>{money(currentItemsTotal)}</strong></div>
                   <div className="text-xs">Delivery: <strong>{money(currentDeliveryTotal)}</strong></div>
                   <div className="text-base font-semibold">Total: {money(currentGrand)}</div>
                 </div>
-                <div className={`rounded-lg p-3 border ${useBestPricePlan ? "border-blue-600" : ""}`}>
-                  <div className="text-sm text-gray-500">Best-Price Plan</div>
+                <div className={`rounded-lg p-3 border border-border`}>
+                  <div className="text-sm text-muted-foreground">Best-Price Plan</div>
                   <div className="mt-1 text-xs">Items: <strong>{money(bestItemsTotal)}</strong></div>
                   <div className="text-xs">Delivery: <strong>{money(bestDeliveryTotal)}</strong></div>
                   <div className="text-base font-semibold">Total: {money(bestGrand)}</div>
                 </div>
                 <div className="rounded-lg p-3 border">
-                  <div className="text-sm text-gray-500">Potential Savings</div>
+                  <div className="text-sm text-muted-foreground">Potential Savings</div>
                   <div className="mt-1 text-emerald-600 font-semibold text-lg">
                     {bestGrand < currentGrand ? `Save ${money(currentGrand - bestGrand)}` : (savingsValue > 0 ? `Save ${money(savingsValue)}` : "—")}
                   </div>
                 </div>
               </div>
 
-              <div className="text-xs text-gray-600">
+              <div className="text-xs text-muted-foreground">
                 <strong>Optimizer:</strong> Balances item prices and delivery to minimize the grand total. &nbsp;
                 <strong>Best-Price:</strong> Chooses the cheapest mart per item; may increase delivery cost if many stores involved.
               </div>
@@ -464,9 +535,9 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-lg flex items-center gap-2">
-                        <MapPin className="h-5 w-5 text-blue-600" /> {mart.mart_name}
+                        <MapPin className="h-5 w-5 text-primary" /> {mart.mart_name}
                       </CardTitle>
-                      <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+                      <div className="flex items-center gap-3 text-sm text-muted-foreground">
                         <Badge variant="secondary">{(mart.distance_km ?? 0).toFixed(1)} km</Badge>
                         <div className="flex items-center gap-1">
                           <Clock className="h-4 w-4" /> {mart.eta_min ?? 0} mins
@@ -501,11 +572,11 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                         return (
                           <div
                             key={`${item.product_id}-${mart.mart_id}`}
-                            className={`group rounded-xl border bg-white dark:bg-gray-800 overflow-hidden shadow-sm hover:shadow-md transition ring-1 ring-transparent ${ring}`}
+                            className={`group rounded-xl border bg-card overflow-hidden shadow-sm hover:shadow-md transition ring-1 ring-transparent ${ring}`}
                           >
                             <div className={`h-2 ${header}`} />
                             <div className="p-3 flex flex-col gap-2">
-                              <div className="w-full aspect-[4/3] bg-gray-50 dark:bg-gray-800 rounded-md overflow-hidden">
+                              <div className="w-full aspect-[4/3] bg-muted dark:bg-card rounded-md overflow-hidden">
                                 {src ? (
                                   <img
                                     src={src}
@@ -513,19 +584,25 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                                     className="w-full h-full object-cover"
                                     loading="lazy"
                                     onError={(e) => {
-                                      fetchImageFromDB(item.product_id);
-                                      (e.currentTarget as HTMLImageElement).src =
-                                        "data:image/svg+xml;utf8," +
-                                        encodeURIComponent(
-                                          `<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300'>
-                                            <rect width='100%' height='100%' fill='#f3f4f6'/>
-                                            <text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='#9ca3af'>Loading…</text>
-                                          </svg>`
-                                        );
-                                    }}
+                                        fetchImageFromDB(item.product_id);
+                                        // create a small SVG placeholder that follows theme tokens at runtime
+                                        try {
+                                          const cs = getComputedStyle(document.documentElement);
+                                          // Prefer HSL tokens from index.css; fall back to safe hex if not present
+                                          const rawBg = cs.getPropertyValue('--card') || cs.getPropertyValue('--background');
+                                          const rawFg = cs.getPropertyValue('--muted-foreground') || cs.getPropertyValue('--foreground');
+                                          // Some tokens are stored as `h s% l%` in the design system; when present, wrap with hsl()
+                                          const bg = rawBg && rawBg.trim() ? `hsl(${rawBg.trim()})` : 'hsl(220 14% 96%)';
+                                          const fg = rawFg && rawFg.trim() ? `hsl(${rawFg.trim()})` : 'hsl(220 9% 46%)';
+                                          const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300'><rect width='100%' height='100%' fill='${bg}' rx='6'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='${fg}'>Loading…</text></svg>`;
+                                          (e.currentTarget as HTMLImageElement).src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+                                        } catch (err) {
+                                          (e.currentTarget as HTMLImageElement).src = '';
+                                        }
+                                      }}
                                   />
                                 ) : (
-                                  <div className="w-full h-full grid place-items-center text-xs text-gray-400">
+                                  <div className="w-full h-full grid place-items-center text-xs text-muted-foreground">
                                     <button onClick={() => fetchImageFromDB(item.product_id)} className="underline">Load image</button>
                                   </div>
                                 )}
@@ -536,11 +613,11 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                               </div>
 
                               <div className="flex items-center justify-between">
-                                <div className="text-xs text-gray-500 dark:text-gray-400">
+                                <div className="text-xs text-muted-foreground">
                                   Qty: <span className="font-medium">{currentQty}</span>
                                 </div>
-                                <div className="font-semibold text-blue-600 dark:text-blue-400">
-                                  {money(item.unit_price)} <span className="text-xs text-gray-500">/unit</span>
+                                <div className="font-semibold text-primary">
+                                  {money(item.unit_price)} <span className="text-xs text-muted-foreground">/unit</span>
                                 </div>
                               </div>
 
@@ -560,7 +637,7 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                                 <div className="inline-flex items-center gap-1">
                                   <button
                                     onClick={() => decreaseQty(item.product_id)}
-                                    className="h-8 w-8 rounded-md grid place-items-center bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600"
+                                    className="h-8 w-8 rounded-md grid place-items-center bg-destructive text-destructive-foreground border border-border hover:bg-destructive/90"
                                     title="Decrease"
                                   >
                                     <Minus className="h-4 w-4" />
@@ -568,7 +645,7 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                                   <div className="w-8 text-center text-sm">{currentQty}</div>
                                   <button
                                     onClick={() => increaseQty(item.product_id)}
-                                    className="h-8 w-8 rounded-md grid place-items-center bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600"
+                                    className="h-8 w-8 rounded-md grid place-items-center bg-success text-success-foreground border border-border hover:bg-success/90"
                                     title="Increase"
                                   >
                                     <Plus className="h-4 w-4" />
@@ -579,14 +656,14 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                                   {/* Compare removed as requested */}
                                   <button
                                     onClick={() => orderSingleItem(mart.mart_id, item)}
-                                    className="h-8 px-3 rounded-md inline-flex items-center gap-1 bg-blue-600 text-white hover:bg-blue-700"
+                                    className="h-8 px-3 rounded-md inline-flex items-center gap-1 bg-primary text-primary-foreground hover:opacity-95"
                                     title="Order just this item"
                                   >
                                     <ShoppingCart className="h-4 w-4" /> Order
                                   </button>
                                   <button
                                     onClick={() => removeItem(item.product_id)}
-                                    className="h-8 px-3 rounded-md inline-flex items-center gap-1 bg-red-600 text-white hover:bg-red-700"
+                                    className="h-8 px-3 rounded-md inline-flex items-center gap-1 bg-destructive text-destructive-foreground hover:opacity-95"
                                     title="Remove"
                                   >
                                     <Trash2 className="h-4 w-4" /> Remove
@@ -611,19 +688,19 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
 
             {/* Summary */}
             <div className="space-y-4 lg:sticky lg:top-20 h-max">
-              <Card className="shadow-card border-blue-600">
+              <Card className="shadow-card border-border">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <ShoppingCart className="h-5 w-5" /> Order Summary
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="space-y-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800">
+                  <div className="space-y-3 p-3 rounded-lg bg-card">
                     <div className="flex items-start gap-2">
                       <Home className="h-4 w-4 mt-1" />
                       <div className="text-sm flex-1">
                         <div className="font-semibold">Deliver to</div>
-                        <div className="text-gray-600 dark:text-gray-300">
+                        <div className="text-muted-foreground">
                           {selectedAddressSummary || "Select a delivery address"}
                         </div>
                       </div>
@@ -636,7 +713,7 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                         value={contactNumber}
                         onChange={(e) => setContactNumber(e.target.value)}
                         placeholder="Contact number"
-                        className="w-full px-3 py-2 rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-sm text-black dark:text-white"
+                        className="w-full px-3 py-2 rounded-md bg-card border border-border text-foreground"
                       />
                     </div>
                   </div>
@@ -645,7 +722,7 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                     <div className="flex justify-between"><span>Items</span><span>{money(useBestPricePlan ? bestItemsTotal : currentItemsTotal)}</span></div>
                     <div className="flex justify-between"><span>Delivery</span><span>{money(useBestPricePlan ? bestDeliveryTotal : currentDeliveryTotal)}</span></div>
 
-                    <div className="mt-2 p-3 rounded bg-white dark:bg-gray-900 border">
+                    <div className="mt-2 p-3 rounded bg-card border border-border">
                       <div className="flex justify-between text-sm"><span>Original Estimate</span><span>{money(originalEstimate)}</span></div>
                       <div className="flex justify-between text-sm"><span>Optimizer Total</span><span>{money(currentGrand)}</span></div>
                       <div className="flex justify-between text-sm font-semibold text-emerald-600"><span>You Save</span><span>{money(savingsValue)} ({savingsPercent}%)</span></div>
@@ -654,19 +731,18 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                     <Separator />
                     <div className="flex justify-between text-lg font-bold">
                       <span>Total</span>
-                      <span className="text-blue-600 dark:text-blue-400">{money(useBestPricePlan ? bestGrand : currentGrand)}</span>
+                      <span className="text-primary">{money(useBestPricePlan ? bestGrand : currentGrand)}</span>
                     </div>
                   </div>
-
                   <Button
                     onClick={placeOrders}
                     disabled={!selectedAddressId || !isLikelyGeocodable(selectedAddressSummary)}
-                    className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white py-4 font-semibold gap-2 disabled:opacity-60"
+                    className="w-full bg-primary text-primary-foreground py-4 font-semibold gap-2 disabled:opacity-60"
                   >
                     <Sparkles className="h-5 w-5" /> {useBestPricePlan ? "Place Best-Price Orders" : "Place Optimizer Orders"}
                   </Button>
                   {useBestPricePlan && (
-                    <div className="text-xs text-gray-500 flex items-center gap-1">
+                    <div className="text-xs text-muted-foreground flex items-center gap-1">
                       <CheckCircle className="h-3 w-3" /> We’ll create one order per store in the best-price plan.
                     </div>
                   )}
@@ -681,7 +757,7 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-sm text-gray-600 dark:text-gray-300 whitespace-pre-wrap">{data.notes}</p>
+                    <p className="text-sm text-muted-foreground whitespace-pre-wrap">{data.notes}</p>
                   </CardContent>
                 </Card>
               )}
@@ -692,10 +768,10 @@ const OptimizedCart: React.FC<OptimizedCartProps> = ({ cart, setCart, products }
           {addressModal && (
             <div className="fixed inset-0 z-50">
               <div className="absolute inset-0 bg-black/40" onClick={() => setAddressModal(false)} />
-              <div className="absolute left-1/2 top-1/2 w-[92vw] max-w-lg -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-gray-900 rounded-xl shadow-lg">
+              <div className="absolute left-1/2 top-1/2 w-[92vw] max-w-lg -translate-x-1/2 -translate-y-1/2 bg-card rounded-xl shadow-lg">
                 <div className="flex items-center justify-between p-4 border-b">
                   <h3 className="font-semibold">Choose Delivery Address</h3>
-                  <button onClick={() => setAddressModal(false)} className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800" aria-label="Close">
+                  <button onClick={() => setAddressModal(false)} className="p-2 rounded hover:bg-muted dark:hover:bg-card" aria-label="Close">
                     <X className="h-4 w-4" />
                   </button>
                 </div>

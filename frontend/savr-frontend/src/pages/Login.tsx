@@ -22,8 +22,8 @@ const Login: React.FC = () => {
   const navigate = useNavigate();
   const emailRef = useRef<HTMLInputElement>(null);
 
-  const rawApiBase = (import.meta.env.VITE_API_BASE as string) || "http://127.0.0.1:8000";
-  const apiBase = rawApiBase.replace(/\/+$/, "");
+  const rawApiBase = (import.meta.env.VITE_API_BASE as string) ?? "";
+  const apiBase = rawApiBase ? rawApiBase.replace(/\/+$/, "") : "";
 
   const validateEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
   const validatePhone = (v: string) => /^[0-9]{7,15}$/.test(v.replace(/\D/g, ""));
@@ -50,7 +50,7 @@ const Login: React.FC = () => {
 
     setLoading(true);
     try {
-      // Step 1: check credentials
+      // Standard user flow: validate credentials, then request OTP
       const res = await fetch(`${apiBase}/api/v1/auth/login/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -59,7 +59,7 @@ const Login: React.FC = () => {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return setError(data?.error || "Login failed");
 
-      // Step 2: request OTP
+      // Request OTP
       const r2 = await fetch(`${apiBase}/api/v1/auth/request-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -68,6 +68,7 @@ const Login: React.FC = () => {
       if (!r2.ok) return setError("Failed to send OTP");
 
       sessionStorage.setItem("otp_dest", email);
+      sessionStorage.setItem("auth_role", "user");
       navigate("/verify-otp");
     } catch {
       setError("Network error");
@@ -137,20 +138,24 @@ const Login: React.FC = () => {
         {/* Card */}
         <div className="bg-card/90 border rounded-2xl shadow-card p-6 md:p-8 backdrop-blur">
           {/* Toggle */}
-          <div className="inline-flex overflow-hidden rounded-xl border mb-6">
-            <button
-              className={`px-4 py-2 text-sm ${!isSignup ? "bg-primary text-primary-foreground" : "bg-background"}`}
-              onClick={() => { setIsSignup(false); setError(""); setHint(""); }}
-            >
-              Sign in
-            </button>
-            <button
-              className={`px-4 py-2 text-sm ${isSignup ? "bg-primary text-primary-foreground" : "bg-background"}`}
-              onClick={() => { setIsSignup(true); setError(""); setHint(""); }}
-            >
-              Sign up
-            </button>
-          </div>
+            <div className="mb-4">
+              <div className="inline-flex overflow-hidden rounded-xl border">
+                <button
+                  className={`px-4 py-2 text-sm ${!isSignup ? "bg-primary text-primary-foreground" : "bg-background"}`}
+                  onClick={() => { setIsSignup(false); setError(""); setHint(""); }}
+                >
+                  Sign in
+                </button>
+                <button
+                  className={`px-4 py-2 text-sm ${isSignup ? "bg-primary text-primary-foreground" : "bg-background"}`}
+                  onClick={() => { setIsSignup(true); setError(""); setHint(""); }}
+                >
+                  Sign up
+                </button>
+              </div>
+
+              {/* Role selector removed: public signup/login only for users. Admins use separate AdminLogin. */}
+            </div>
 
           {error && <div className="mb-4 text-sm text-destructive">{error}</div>}
           {hint && <div className="mb-4 text-sm text-emerald-600">{hint}</div>}

@@ -1,23 +1,27 @@
 // vite.config.ts
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import path from "path";
+import { resolve } from "path";
 
 export default defineConfig({
   plugins: [react()],
-  server: {
-    port: 8080,
-    proxy: {
-      "/api": {
-        target: "http://localhost:8000",
-        changeOrigin: true,
-        secure: false,
-      },
-    },
-  },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "src"),
+      "@": resolve(__dirname, "src"),
+    },
+  },
+  server: {
+    port: 8080,
+    host: '127.0.0.1',
+    open: false,
+    proxy: {
+      // proxy all /api requests to your backend
+      "/api": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+        secure: false, // allow self-signed / http backend
+      },
     },
   },
 });

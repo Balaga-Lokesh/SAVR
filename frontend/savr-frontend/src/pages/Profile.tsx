@@ -26,7 +26,8 @@ interface UserProfile {
 
 const Profile: React.FC = () => {
   const navigate = useNavigate();
-  const token = sessionStorage.getItem("authToken") || "";
+  // use cookie-based auth
+  const token = null;
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -44,9 +45,7 @@ const Profile: React.FC = () => {
   );
 
   const logout = () => {
-    sessionStorage.removeItem("authToken");
     sessionStorage.removeItem("mfaVerified");
-    sessionStorage.removeItem("temp_token");
     sessionStorage.removeItem("otp_dest");
     navigate("/login");
   };
@@ -55,9 +54,7 @@ const Profile: React.FC = () => {
     try {
       setLoading(true);
       setErr(null);
-      const res = await fetch("/api/v1/auth/me/", {
-        headers: { Authorization: `Token ${token}` },
-      });
+      const res = await fetch("/api/v1/auth/me/", { credentials: 'include' });
       if (res.status === 401) {
         logout();
         return;
@@ -83,7 +80,6 @@ const Profile: React.FC = () => {
       return;
     }
     loadProfile();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onCopy = (txt: string) => {
@@ -103,10 +99,8 @@ const Profile: React.FC = () => {
       setSaveOK(false);
       const res = await fetch("/api/v1/auth/me/", {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Token ${token}`,
-        },
+        credentials: 'include',
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           username: form.username?.trim(),
           email: form.email?.trim(),
@@ -130,11 +124,11 @@ const Profile: React.FC = () => {
     return (
       <div className="container mx-auto px-4 py-8 max-w-4xl">
         <div className="rounded-2xl overflow-hidden shadow-sm animate-pulse">
-          <div className="h-32 bg-gradient-to-r from-gray-200 to-gray-300" />
+          <div className="h-32 bg-muted/10" />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
           {[...Array(3)].map((_, i) => (
-            <Card key={i} className="p-4 h-32 animate-pulse bg-gray-50 dark:bg-gray-800" />
+            <Card key={i} className="p-4 h-32 animate-pulse bg-card" />
           ))}
         </div>
       </div>
@@ -156,14 +150,14 @@ const Profile: React.FC = () => {
       <div className="rounded-2xl overflow-hidden shadow-sm">
         <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 p-6 text-white">
           <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-full bg-white/20 grid place-items-center text-2xl font-semibold">
+            <div className="w-16 h-16 rounded-full bg-muted/10 grid place-items-center text-2xl font-semibold">
               {initial}
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h1 className="text-2xl font-bold truncate">{profile?.username}</h1>
                 {saveOK && (
-                  <span className="inline-flex items-center gap-1 text-xs bg-white/20 px-2 py-0.5 rounded">
+                  <span className="inline-flex items-center gap-1 text-xs bg-muted/10 px-2 py-0.5 rounded">
                     <CheckCircle2 className="h-3 w-3" /> Saved
                   </span>
                 )}
@@ -182,7 +176,7 @@ const Profile: React.FC = () => {
               </div>
             </div>
             <Button
-              className="ml-auto bg-white text-blue-700 hover:bg-white/90"
+              className="ml-auto bg-card text-primary hover:bg-card/90"
               onClick={() => setEditOpen(true)}
             >
               <Edit3 className="h-4 w-4 mr-2" />
@@ -191,8 +185,8 @@ const Profile: React.FC = () => {
           </div>
 
           {/* quick stats */}
-          <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-            <div className="bg-white/15 rounded-lg p-3">
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div className="bg-card/5 rounded-lg p-3">
               <div className="opacity-80">User ID</div>
               <div className="font-semibold flex items-center gap-2">
                 {profile?.user_id}
@@ -201,7 +195,7 @@ const Profile: React.FC = () => {
                 </button>
               </div>
             </div>
-            <div className="bg-white/15 rounded-lg p-3">
+            <div className="bg-card/5 rounded-lg p-3">
               <div className="opacity-80">Default Address</div>
               <div className="font-semibold truncate">
                 {profile?.default_address
@@ -209,13 +203,13 @@ const Profile: React.FC = () => {
                   : "Not set"}
               </div>
             </div>
-            <div className="bg-white/15 rounded-lg p-3">
+            <div className="bg-card/5 rounded-lg p-3">
               <div className="opacity-80">Security</div>
               <div className="font-semibold flex items-center gap-1">
                 <ShieldCheck className="h-4 w-4" /> Good
               </div>
             </div>
-            <div className="bg-white/15 rounded-lg p-3">
+            <div className="bg-card/5 rounded-lg p-3">
               <div className="opacity-80">Status</div>
               <div className="font-semibold">Active</div>
             </div>
@@ -287,12 +281,12 @@ const Profile: React.FC = () => {
             className="absolute inset-0 bg-black/40"
             onClick={() => !saving && setEditOpen(false)}
           />
-          <div className="absolute left-1/2 top-1/2 w-[90vw] max-w-md -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-gray-900 rounded-xl shadow-lg">
+          <div className="absolute left-1/2 top-1/2 w-[90vw] max-w-md -translate-x-1/2 -translate-y-1/2 bg-card rounded-xl shadow-lg">
             <div className="flex items-center justify-between p-4 border-b">
               <h3 className="font-semibold">Edit Profile</h3>
               <button
                 onClick={() => !saving && setEditOpen(false)}
-                className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="p-2 rounded hover:bg-muted/10"
                 aria-label="Close"
               >
                 <X className="h-4 w-4" />

@@ -20,7 +20,8 @@ type Address = {
   is_default: boolean;
 };
 
-const apiBase = ((import.meta as any).env?.VITE_API_BASE as string) || "http://127.0.0.1:8000";
+const rawApiBase = ((import.meta as any).env?.VITE_API_BASE as string) || "";
+const apiBase = rawApiBase || "";
 
 const Addresses: React.FC = () => {
   const [list, setList] = useState<Address[]>([]);
@@ -40,23 +41,13 @@ const Addresses: React.FC = () => {
     is_default: false,
   });
 
-  const token = sessionStorage.getItem("authToken") || "";
-
-  const authFetch = (url: string, init?: RequestInit) =>
-    fetch(url, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Token ${token}`,
-        ...(init?.headers || {}),
-      },
-    });
+  const buildUrl = (p: string) => (apiBase ? `${apiBase.replace(/\/+$/, "")}${p}` : p);
 
   const load = async () => {
     setLoading(true);
     setErr("");
     try {
-      const res = await authFetch(`${apiBase.replace(/\/+$/, "")}/api/v1/addresses/`);
+      const res = await fetch(buildUrl('/api/v1/addresses/'), { credentials: 'include' });
       if (!res.ok) throw new Error(`Failed: ${res.status}`);
       const data = await res.json();
       setList(data);
@@ -69,7 +60,6 @@ const Addresses: React.FC = () => {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const validate = () => {
@@ -94,8 +84,10 @@ const Addresses: React.FC = () => {
     }
     setErr("");
     try {
-      const res = await authFetch(`${apiBase.replace(/\/+$/, "")}/api/v1/addresses/`, {
+      const res = await fetch(buildUrl('/api/v1/addresses/'), {
         method: "POST",
+        credentials: "include",
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       });
       const data = await res.json().catch(() => ({}));
@@ -120,10 +112,7 @@ const Addresses: React.FC = () => {
 
   const makeDefault = async (id: number) => {
     try {
-      const res = await authFetch(
-        `${apiBase.replace(/\/+$/, "")}/api/v1/addresses/${id}/set-default/`,
-        { method: "POST" }
-      );
+      const res = await fetch(buildUrl(`/api/v1/addresses/${id}/set-default/`), { method: "POST", credentials: "include" });
       if (!res.ok) throw new Error("Failed to set default");
       await load();
     } catch (e: any) {
@@ -134,9 +123,7 @@ const Addresses: React.FC = () => {
   const remove = async (id: number) => {
     if (!confirm("Delete this address?")) return;
     try {
-      const res = await authFetch(`${apiBase.replace(/\/+$/, "")}/api/v1/addresses/${id}/`, {
-        method: "DELETE",
-      });
+      const res = await fetch(buildUrl(`/api/v1/addresses/${id}/`), { method: "DELETE", credentials: "include" });
       if (!res.ok) throw new Error("Failed to delete");
       await load();
     } catch (e: any) {
@@ -175,7 +162,7 @@ const Addresses: React.FC = () => {
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-2">
-                <div className="rounded-md bg-blue-50 dark:bg-gray-800 p-2">{iconForLabel(a.label)}</div>
+                <div className="rounded-md bg-muted/10 p-2">{iconForLabel(a.label)}</div>
                 <div>
                   <div className="font-semibold">{a.label || "Address"}</div>
                   <div className="text-xs text-muted-foreground">
@@ -186,7 +173,7 @@ const Addresses: React.FC = () => {
               </div>
               <div className="flex items-center gap-2">
                 {a.is_default && (
-                  <Badge className="bg-blue-600">
+                  <Badge className="bg-primary text-primary-foreground">
                     <Star className="h-3 w-3 mr-1" />
                     Default
                   </Badge>
@@ -224,12 +211,12 @@ const Addresses: React.FC = () => {
       {adding && (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/40" onClick={() => setAdding(false)} />
-          <div className="absolute left-1/2 top-1/2 w-[92vw] max-w-lg -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-gray-900 rounded-xl shadow-lg">
+          <div className="absolute left-1/2 top-1/2 w-[92vw] max-w-lg -translate-x-1/2 -translate-y-1/2 bg-card rounded-xl shadow-lg">
             <div className="flex items-center justify-between p-4 border-b">
               <h3 className="font-semibold">Add New Address</h3>
               <button
                 onClick={() => setAdding(false)}
-                className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                className="p-2 rounded hover:bg-muted/10"
               >
                 <X className="h-4 w-4" />
               </button>

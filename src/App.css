@@ -12,10 +12,11 @@
   transition: filter 300ms;
 }
 .logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
+  /* use theme token for primary glow with a fallback */
+  filter: drop-shadow(0 0 2em hsl(var(--primary-foreground) / 0.67));
 }
 .logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+  filter: drop-shadow(0 0 2em hsl(var(--primary-foreground) / 0.45));
 }
 
 @keyframes logo-spin {
@@ -38,5 +39,6 @@
 }
 
 .read-the-docs {
-  color: #888;
+  /* muted text using theme token with small darkening for contrast */
+  color: color-mix(in srgb, hsl(var(--muted-foreground)), black 20%);
 }

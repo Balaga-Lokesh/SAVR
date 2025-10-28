@@ -37,11 +37,11 @@ const CheckoutFlow: React.FC = () => {
 
     if (step === "payment") {
       try {
-        const token = typeof window !== "undefined" ? sessionStorage.getItem("authToken") : null;
-        if (!token) {
-          window.location.href = "/login";
-          return;
-        }
+        // Ensure user is authenticated via cookie
+        try {
+          const me = await fetch('/api/v1/auth/me/', { credentials: 'include' });
+          if (!me.ok) { window.location.href = '/login'; return; }
+        } catch (e) { window.location.href = '/login'; return; }
 
         const items = (cart || []).map((it: any) => ({
           product_id: it.product_id,
@@ -79,7 +79,8 @@ const CheckoutFlow: React.FC = () => {
 
           const addrRes = await fetch("/api/v1/addresses/", {
             method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Token ${token}` },
+            credentials: 'include',
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(addrPayload),
           });
           if (!addrRes.ok) {
@@ -102,7 +103,8 @@ const CheckoutFlow: React.FC = () => {
           // COD flow
           const res = await fetch("/api/v1/orders/create/", {
             method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Token ${token}` },
+            credentials: 'include',
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               items,
               address_id,
@@ -123,12 +125,13 @@ const CheckoutFlow: React.FC = () => {
         // 1) ask backend to create a Razorpay order
         const createRes = await fetch("/api/v1/payments/razorpay/create-order/", {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Token ${token}` },
+          credentials: 'include',
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             amount,
             currency: "INR",
             receipt: `savr-${Date.now()}`,
-            notes: { user_id: sessionStorage.getItem("userId") || null },
+            notes: {},
           }),
         });
         const createJson = await createRes.json().catch(() => ({}));
@@ -149,7 +152,10 @@ const CheckoutFlow: React.FC = () => {
         });
 
         // 3) open checkout
-        const options = {
+  const cs = getComputedStyle(document.documentElement);
+  const rawRz = cs.getPropertyValue('--primary-foreground');
+  const rzColor = rawRz && rawRz.trim() ? `hsl(${rawRz.trim()})` : 'hsl(174 74% 43%)';
+  const options = {
           key: key_id,
           amount: Math.round(Number(amount) * 100),
           currency: "INR",
@@ -161,7 +167,8 @@ const CheckoutFlow: React.FC = () => {
               // verify on server
               const verifyRes = await fetch("/api/v1/payments/razorpay/verify/", {
                 method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Token ${token}` },
+                credentials: 'include',
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   payment_id,
                   razorpay_payment_id: response.razorpay_payment_id,
@@ -176,7 +183,8 @@ const CheckoutFlow: React.FC = () => {
               // create actual order in system
               const orderRes = await fetch("/api/v1/orders/create/", {
                 method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Token ${token}` },
+                credentials: 'include',
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   items,
                   address_id,
@@ -202,7 +210,7 @@ const CheckoutFlow: React.FC = () => {
             contact: formData.phone,
           },
           notes: { address_id },
-          theme: { color: "#0ea5a4" },
+          theme: { color: rzColor },
         };
         const rzp = new (window as any).Razorpay(options);
         rzp.open();
@@ -231,7 +239,7 @@ const CheckoutFlow: React.FC = () => {
             onChange={(e) => handleChange("phone", e.target.value)}
           />
           <button
-            className="bg-blue-600 text-white px-4 py-2 rounded"
+            className="bg-primary text-primary-foreground px-4 py-2 rounded"
             onClick={handleNext}
           >
             Continue to Payment
@@ -263,7 +271,7 @@ const CheckoutFlow: React.FC = () => {
             </label>
           </div>
           <button
-            className="bg-green-600 text-white px-4 py-2 rounded"
+            className="bg-success text-success-foreground px-4 py-2 rounded"
             onClick={handleNext}
           >
             Place Order

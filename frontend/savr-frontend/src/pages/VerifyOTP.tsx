@@ -1,107 +1,143 @@
+// src/pages/VerifyOTP.tsx
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useNavigate } from "react-router-dom";
 
-const VerifyOTP = () => {
+const VerifyOTP: React.FC = () => {
   const [code, setCode] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { refresh, user } = useAuth();
 
-  const rawApiBase = (import.meta.env.VITE_API_BASE as string) || "http://127.0.0.1:8000";
-  const apiBase = rawApiBase.replace(/\/+$/, "");
-
+  // Use relative paths by default so Vite dev proxy keeps calls same-origin for cookies
+  const rawApiBase = (import.meta.env.VITE_API_BASE as string) ?? "";
+  const apiBase = rawApiBase ? rawApiBase.replace(/\/+$/, "") : "";
   const dest = sessionStorage.getItem("otp_dest") || "";
+  const role = sessionStorage.getItem("auth_role") || "user";
 
   const handleVerify = async () => {
-    if (!code) return setError("Please enter the OTP code");
-    if (code.length < 4) return setError("Enter the full OTP");
-
-    setLoading(true); setError(""); setInfo("");
+    setErr("");
+    setInfo("");
+    if (!code || code.trim().length < 3) {
+      setErr("Enter the OTP.");
+      return;
+    }
+    // If agent/partner supplies a password, validate it client-side
+    if ((role === "agent" || role === "partner") && (newPassword || confirmPassword)) {
+      if (newPassword.length < 8) { setErr("Password must be at least 8 characters"); return; }
+      if (newPassword !== confirmPassword) { setErr("Passwords do not match"); return; }
+    }
+    setLoading(true);
     try {
+  const body: any = { destination: dest, code: code.trim(), purpose: "login", role };
+  // allow partners to set password during OTP verify as well
+  if ((role === "agent" || role === "partner") && newPassword) body.new_password = newPassword;
       const res = await fetch(`${apiBase}/api/v1/auth/verify-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          destination: dest,
-          code,
-          purpose: "login",
-        }),
+        credentials: "include",
+        body: JSON.stringify(body),
       });
 
       const data = await res.json().catch(() => ({}));
-
-      if (res.ok && data?.token) {
-        sessionStorage.setItem("authToken", data.token);
-        sessionStorage.setItem("mfaVerified", "true");
-        sessionStorage.removeItem("otp_dest");
-
-        setInfo("OTP verified! Redirecting…");
-        setTimeout(() => navigate("/shopping-list"), 800);
-      } else {
-        setError(data?.error || "Invalid or expired code");
+      if (!res.ok) {
+        setErr(data?.error || data?.detail || `Verify failed: ${res.status}`);
+        return;
       }
-    } catch {
-      setError("Network error. Check backend server or CORS.");
+
+      // token is set as an httpOnly cookie by the backend; no need to store it in sessionStorage.
+
+      // Wait for global auth refresh so RequireAuth doesn't prematurely redirect
+      try {
+        await refresh();
+      } catch (e) {
+        console.warn("refresh after verify failed:", e);
+      }
+
+      sessionStorage.removeItem("otp_dest");
+      setInfo("Verified — redirecting...");
+
+      // Wait until user is set in AuthContext before redirecting
+      const waitForUser = async () => {
+        for (let i = 0; i < 20; ++i) {
+          if (user) break;
+          await new Promise(res => setTimeout(res, 100));
+        }
+        if (role === "admin") navigate("/admin");
+        else if (role === "agent" || role === "partner") navigate("/agent");
+        else navigate("/shopping-list");
+      };
+      waitForUser();
+    } catch (e) {
+      console.error("verify network error:", e);
+      setErr("Network error. Check backend.");
     } finally {
       setLoading(false);
     }
   };
 
   const handleResend = async () => {
-    setError(""); setInfo("");
+    setErr("");
+    setInfo("");
     if (!dest) {
-      setError("Missing email session. Please login again.");
+      setErr("Missing destination. Try login again.");
       return;
     }
+    setLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/v1/auth/request-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ destination: dest, purpose: "login" }),
+        credentials: "include",
+        body: JSON.stringify({ destination: dest, purpose: "login", role }),
       });
-      if (res.ok) setInfo("OTP resent. Please check your inbox/device.");
-      else setError("Failed to resend OTP");
-    } catch {
-      setError("Network error while resending OTP.");
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) setErr(d?.error || d?.detail || `Resend failed: ${res.status}`);
+      else setInfo("OTP resent. Check email or backend console (dev).");
+    } catch (e) {
+      setErr("Network error while resending.");
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background via-muted/20 to-fresh/5 p-6">
-      <div className="w-full max-w-md bg-card p-8 rounded-xl shadow-card">
-        <h2 className="text-2xl font-bold mb-2">Verify OTP</h2>
-        <p className="mb-4 text-sm">
-          Code sent to: <strong>{dest || "your account"}</strong>
-        </p>
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <div className="w-full max-w-md bg-card p-8 rounded-2xl shadow-lg border border-border">
+        <h2 className="text-2xl font-bold mb-3 text-center">Verify OTP</h2>
+        <p className="text-sm mb-5 text-center text-muted-foreground">Code sent to: <strong>{dest || "your account"}</strong></p>
 
-        {error && <p className="text-destructive mb-4">{error}</p>}
-        {info && <p className="text-primary mb-4">{info}</p>}
+        {err && <div className="text-destructive bg-destructive/10 border-destructive/20 rounded px-3 py-2 mb-4 text-center text-sm">{err}</div>}
+        {info && <div className="text-success bg-success/10 border-success/20 rounded px-3 py-2 mb-4 text-center text-sm">{info}</div>}
 
-        <label className="block mb-6">
-          <div className="text-sm mb-1">OTP Code</div>
-          <Input
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            placeholder="Enter code"
-            maxLength={6}
-          />
-        </label>
-
-        <div className="flex gap-2">
-          <Button onClick={handleVerify} className="flex-1" disabled={loading}>
-            {loading ? "Verifying..." : "Verify & Continue"}
-          </Button>
-          <Button type="button" variant="ghost" onClick={handleResend}>
-            Resend
-          </Button>
+        <div className="mb-5">
+          <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Enter OTP code" className="text-lg py-3 px-4" />
         </div>
 
-        <div className="text-sm flex items-center justify-between mt-4">
-          <button className="underline" onClick={() => navigate("/login")}>Back to login</button>
-          <button className="underline" onClick={() => navigate("/forgot-password")}>Forgot password?</button>
+        {role === 'agent' && (
+          <div className="space-y-3 mb-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Set a password (optional)</label>
+              <Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="New password (min 8 chars)" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Confirm password</label>
+              <Input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Confirm password" />
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <Button onClick={handleVerify} disabled={loading} className="flex-1 text-base py-3">
+            {loading ? "Verifying…" : "Verify & Continue"}
+          </Button>
+          <Button variant="ghost" onClick={handleResend} className="flex-1 text-base py-3">Resend</Button>
         </div>
       </div>
     </div>

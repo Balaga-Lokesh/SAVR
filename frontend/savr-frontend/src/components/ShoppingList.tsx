@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ShoppingCart, Search, SlidersHorizontal, Star, Store } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 interface Product {
   product_id: number;
@@ -36,13 +37,13 @@ type GroupedProduct = {
 // ---------- helpers ----------
 const INR = (n: number) => `₹${(n ?? 0).toFixed(2)}`;
 
-const categoryClass = (category: string) => {
+  const categoryClass = (category: string) => {
   const m: Record<string, string> = {
-    grocery: "bg-green-100 text-green-800 dark:bg-green-900/60 dark:text-green-200",
-    dairy: "bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-200",
-    clothing: "bg-purple-100 text-purple-800 dark:bg-purple-900/60 dark:text-purple-200",
-    essential: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/60 dark:text-yellow-200",
-    other: "bg-gray-100 text-gray-800 dark:bg-gray-700/60 dark:text-gray-200",
+    grocery: "bg-success/10 text-success dark:bg-success/20 dark:text-success-foreground",
+    dairy: "bg-primary/10 text-primary dark:bg-primary/20 dark:text-primary-foreground",
+    clothing: "bg-premium/10 text-premium dark:bg-premium/20 dark:text-premium-foreground",
+    essential: "bg-savings/10 text-savings dark:bg-savings/20 dark:text-savings-foreground",
+    other: "bg-muted/5 text-muted-foreground dark:bg-card/5 dark:text-muted-foreground",
   };
   return m[category] || m.other;
 };
@@ -64,7 +65,8 @@ const ProductImage: React.FC<{ src?: string; alt: string; seed: string | number 
   const w = 320,
     h = 240;
 
-  const base = (import.meta as any).env?.VITE_API_BASE || "http://127.0.0.1:8000";
+  const rawApiBase = (import.meta as any).env?.VITE_API_BASE || "";
+  const base = rawApiBase ? rawApiBase : "";
   const finalSrc =
     !src || error || src.includes("placehold")
       ? `https://picsum.photos/seed/${encodeURIComponent(String(seed))}/${w}/${h}`
@@ -73,11 +75,11 @@ const ProductImage: React.FC<{ src?: string; alt: string; seed: string | number 
       : `${base}${src}`;
 
   return (
-    <div className="w-full aspect-[4/3] bg-gray-50 dark:bg-gray-800 rounded-lg overflow-hidden">
+    <div className="w-full aspect-[4/3] bg-card rounded-lg overflow-hidden">
       <img
         src={finalSrc}
         alt={alt}
-        className="w-full h-full object-contain p-3 transition-transform duration-300 group-hover:scale-[1.03]"
+        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
         loading="lazy"
         onError={() => setError(true)}
       />
@@ -92,6 +94,7 @@ const ShoppingList: React.FC<{
   setCart: React.Dispatch<React.SetStateAction<CartItem[]>>;
   onNavigateToCart: () => void;
 }> = ({ products, cart, setCart, onNavigateToCart }) => {
+  const navigate = useNavigate(); // <- hook is inside component (fixed)
   const source = Array.isArray(products) ? products : [];
 
   // UI state
@@ -149,7 +152,7 @@ const ShoppingList: React.FC<{
     const q: Record<string, number> = {};
     (groups ?? []).forEach((g) => (q[g.key] = q[g.key] ?? 1));
     setQuantities((prev) => ({ ...q, ...prev }));
-  }, [groups]);
+  }, [groups.length]);
 
   // filtering + sorting
   const visible = useMemo(() => {
@@ -190,6 +193,15 @@ const ShoppingList: React.FC<{
 
   const totalItems = (cart ?? []).reduce((s, i) => s + (i?.quantity || 0), 0);
 
+  const handleFloatingCartClick = () => {
+    // prefer passed-in navigation handler to avoid racing issues; fallback to router navigate
+    if (typeof onNavigateToCart === "function") {
+      onNavigateToCart();
+      return;
+    }
+    navigate("/cart");
+  };
+
   return (
     <div className="container mx-auto px-4 py-8">
       {/* Heading */}
@@ -203,12 +215,12 @@ const ShoppingList: React.FC<{
       {/* Controls */}
       <div className="mb-6 grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
         <div className="lg:col-span-6 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
           <Input
             placeholder="Search products, e.g. milk, bread, rice..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-10 py-2 rounded-lg border border-gray-300 bg-gray-50 dark:bg-gray-700 dark:text-white"
+            className="pl-10 py-2 rounded-lg border border-border bg-muted dark:bg-card dark:text-foreground"
           />
         </div>
 
@@ -220,8 +232,8 @@ const ShoppingList: React.FC<{
                 onClick={() => setCategory(c)}
                 className={`px-3 py-1.5 rounded-full border text-sm transition ${
                   category === c
-                    ? "bg-blue-600 text-white border-blue-600"
-                    : "bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 hover:border-blue-400"
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-card text-foreground border-border hover:border-border"
                 }`}
               >
                 {c[0].toUpperCase() + c.slice(1)}
@@ -232,11 +244,11 @@ const ShoppingList: React.FC<{
 
         <div className="lg:col-span-2 justify-self-end">
           <div className="flex items-center gap-2">
-            <SlidersHorizontal className="h-4 w-4 text-gray-500" />
+            <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="px-3 py-2 rounded-lg border border-gray-300 bg-white dark:bg-gray-800 dark:text-white"
+        className="px-3 py-2 rounded-lg border border-border bg-card dark:bg-card text-foreground"
             >
               <option value="relevance">Sort: A → Z</option>
               <option value="price_asc">Price: Low to High</option>
@@ -250,7 +262,7 @@ const ShoppingList: React.FC<{
       {/* Grid */}
       <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 lg:gap-6">
         {visible.length === 0 && (
-          <div className="col-span-full text-center text-gray-600 dark:text-gray-300 py-10">
+          <div className="col-span-full text-center text-muted-foreground py-10">
             No products found. Try a different search or category.
           </div>
         )}
@@ -261,7 +273,7 @@ const ShoppingList: React.FC<{
           return (
             <Card
               key={g.key}
-              className="group p-3 lg:p-4 bg-white dark:bg-gray-800 border shadow-sm rounded-2xl hover:shadow-md transition"
+              className="group p-3 lg:p-4 bg-card border border-border shadow-sm rounded-2xl hover:shadow-md transition"
             >
               {/* Accent strip */}
               <div className={`h-2 rounded-full mb-3 ${strip}`} />
@@ -269,22 +281,22 @@ const ShoppingList: React.FC<{
               <ProductImage src={g.repImage} alt={g.name} seed={g.key} />
 
               <div className="mt-3 space-y-2">
-                <h3 className="font-semibold text-base lg:text-lg text-gray-900 dark:text-white line-clamp-2">
+                <h3 className="font-semibold text-base lg:text-lg text-foreground line-clamp-2">
                   {g.name}
                 </h3>
 
                 {/* Price + Quality */}
                 <div className="flex items-center justify-between">
-                  <span className="text-base lg:text-lg font-bold text-blue-600">
+                  <span className="text-base lg:text-lg font-bold text-primary">
                     {g.minPrice === g.maxPrice ? INR(g.minPrice) : `${INR(g.minPrice)} – ${INR(g.maxPrice)}`}
                   </span>
-                  <div className="flex items-center gap-1 text-xs lg:text-sm text-gray-600 dark:text-gray-300">
-                    {[1, 2, 3, 4, 5].map((n) => (
-                      <Star
-                        key={n}
-                        className={`h-4 w-4 ${n <= Math.round(g.avgQuality) ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
-                      />
-                    ))}
+                  <div className="flex items-center gap-1 text-xs lg:text-sm text-muted-foreground">
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <Star
+                          key={n}
+                          className={`h-4 w-4 ${n <= Math.round(g.avgQuality) ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`}
+                        />
+                      ))}
                     <span className="ml-1">{g.avgQuality.toFixed(1)}</span>
                   </div>
                 </div>
@@ -294,13 +306,13 @@ const ShoppingList: React.FC<{
                   {Array.from(g.categories).map((cat) => (
                     <Badge key={cat} className={`${categoryClass(cat)} text-xs`}>{cat}</Badge>
                   ))}
-                  <Badge className="bg-gray-100 text-gray-700 dark:bg-gray-700/60 dark:text-gray-200 text-xs">
+                  <Badge className="bg-card/5 text-muted-foreground text-xs">
                     {g.count} variant{g.count > 1 ? "s" : ""}
                   </Badge>
                 </div>
 
                 {/* Marts */}
-                <div className="text-xs lg:text-sm text-gray-600 dark:text-gray-300 flex items-center gap-1">
+                <div className="text-xs lg:text-sm text-muted-foreground flex items-center gap-1">
                   <Store className="h-3.5 w-3.5" />
                   <span className="truncate">
                     {g.martNames.slice(0, 3).join(", ")}
@@ -313,7 +325,7 @@ const ShoppingList: React.FC<{
                   <div className="flex items-center gap-1 lg:gap-2">
                     <button
                       onClick={() => changeQty(g.key, -1)}
-                      className="w-7 h-7 lg:w-8 lg:h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-full text-sm hover:bg-gray-200 dark:hover:bg-gray-600"
+                      className="w-7 h-7 lg:w-8 lg:h-8 flex items-center justify-center bg-destructive text-destructive-foreground rounded-full text-sm hover:bg-destructive/90"
                       aria-label="Decrease quantity"
                     >
                       −
@@ -323,7 +335,7 @@ const ShoppingList: React.FC<{
                     </span>
                     <button
                       onClick={() => changeQty(g.key, 1)}
-                      className="w-7 h-7 lg:w-8 lg:h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-full text-sm hover:bg-gray-200 dark:hover:bg-gray-600"
+                      className="w-7 h-7 lg:w-8 lg:h-8 flex items-center justify-center bg-success text-success-foreground rounded-full text-sm hover:bg-success/90"
                       aria-label="Increase quantity"
                     >
                       +
@@ -332,7 +344,7 @@ const ShoppingList: React.FC<{
 
                   <button
                     onClick={() => addToCart(g)}
-                    className="px-3 lg:px-4 py-2 bg-blue-600 text-white rounded-lg text-xs lg:text-sm hover:bg-blue-700 transition-colors"
+                    className="px-3 lg:px-4 py-2 bg-primary text-primary-foreground rounded-lg text-xs lg:text-sm hover:bg-special/90 transition-colors"
                     title="Adds the cheapest variant to cart"
                   >
                     Add to Cart
@@ -347,8 +359,8 @@ const ShoppingList: React.FC<{
       {/* Floating Cart */}
       {totalItems > 0 && (
         <button
-          onClick={onNavigateToCart}
-          className="fixed bottom-6 right-6 flex items-center gap-2 bg-blue-600 text-white px-4 lg:px-5 py-3 rounded-full shadow-lg hover:bg-blue-700 transition-colors z-10"
+          onClick={handleFloatingCartClick}
+          className="fixed bottom-6 right-6 flex items-center gap-2 bg-primary text-primary-foreground px-4 lg:px-5 py-3 rounded-full shadow-lg hover:bg-special/90 transition-colors z-10"
         >
           <ShoppingCart className="h-5 w-5" />
           <span className="text-sm lg:text-base">

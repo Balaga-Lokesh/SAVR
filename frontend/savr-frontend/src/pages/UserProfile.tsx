@@ -27,30 +27,24 @@ const UserProfile: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   const logout = () => {
-    sessionStorage.removeItem("authToken");
     sessionStorage.removeItem("mfaVerified");
-    sessionStorage.removeItem("temp_token");
     sessionStorage.removeItem("otp_dest");
     navigate("/login");
   };
 
   useEffect(() => {
-    const token = sessionStorage.getItem("authToken");
-    if (!token) {
-      navigate("/login");
-      return;
-    }
-
     const fetchProfile = async () => {
       try {
-        const res = await fetch("/api/v1/auth/me/", {
-          headers: { Authorization: `Token ${token}` },
-        });
-        if (!res.ok) throw new Error("Failed to fetch profile");
+        const res = await fetch("/api/v1/auth/me/", { credentials: "include" });
+        if (!res.ok) {
+          navigate("/login");
+          return;
+        }
         const data = await res.json();
         setProfile(data);
       } catch (err) {
         console.error(err);
+        navigate("/login");
       } finally {
         setLoading(false);
       }

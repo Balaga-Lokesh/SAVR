@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState } from "react";
+// src/contexts/CartContext.tsx
+import React, { createContext, useContext, useEffect, useState } from "react";
 
-type CartItem = {
+export type CartItem = {
   product_id: number;
   quantity: number;
 };
@@ -12,9 +13,31 @@ type CartContextType = {
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
-export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [cart, setCart] = useState<CartItem[]>([]);
-  return <CartContext.Provider value={{ cart, setCart }}>{children}</CartContext.Provider>;
+/**
+ * CartProvider persists cart in localStorage so cart items survive
+ * auth refresh / page reloads and prevent "lost cart" when RequireAuth briefly loads.
+ */
+export const CartProvider: React.FC<{ children: React.ReactNode; value?: CartContextType }> = ({ children, value }) => {
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    try {
+      const saved = localStorage.getItem("savr_cart");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("savr_cart", JSON.stringify(cart));
+    } catch (e) {
+      // ignore
+    }
+  }, [cart]);
+
+  const providerValue = value ?? { cart, setCart };
+
+  return <CartContext.Provider value={providerValue}>{children}</CartContext.Provider>;
 };
 
 export const useCart = () => {

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { apiUrl } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useNavigate } from 'react-router-dom';
@@ -9,7 +10,7 @@ const VerifyOTP = () => {
   const dest = sessionStorage.getItem('otp_dest') || '';
 
   const handleVerify = async () => {
-    const apiBase = (import.meta.env.VITE_API_BASE as string) || 'http://127.0.0.1:8000';
+  const apiBase = apiUrl('');
     const res = await fetch(`${apiBase}/api/v1/auth/verify-otp/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
