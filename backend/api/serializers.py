@@ -26,16 +26,21 @@ class AddressSerializer(serializers.ModelSerializer):
 class AdminSerializer(serializers.ModelSerializer):
     class Meta:
         model = Admin
-        fields = "__all__"
+        # Expose only safe admin fields to the API (do not leak password_hash)
+        fields = ("admin_id", "username", "email", "role", "created_at", "updated_at")
 
 # -------------------- Mart --------------------
 class MartSerializer(serializers.ModelSerializer):
+    # Return nested admin object so frontend can read admin.username and admin.admin_id
+    admin = AdminSerializer(read_only=True)
+
     class Meta:
         model = Mart
         fields = "__all__"
 
 # -------------------- Product --------------------
 class ProductSerializer(serializers.ModelSerializer):
+    mart_id = serializers.IntegerField(source="mart.mart_id", read_only=True)
     mart_name = serializers.CharField(source="mart.name", read_only=True)
     image_url = serializers.SerializerMethodField()
 
@@ -43,7 +48,7 @@ class ProductSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             "product_id", "name", "category", "price",
-            "quality_score", "stock", "mart_name", "image_url",
+            "quality_score", "stock", "mart_id", "mart_name", "image_url",
         ]
 
     def get_image_url(self, obj):

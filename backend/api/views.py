@@ -1,4 +1,3 @@
-# views.py
 import stripe
 import os
 import hmac
@@ -9,6 +8,9 @@ import re
 import hashlib
 import json
 import requests
+import traceback
+import sys
+
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from rest_framework import status
@@ -22,7 +24,7 @@ from django.http import JsonResponse
 from django.db.models import Q
 from django.utils import timezone
 from django.contrib.auth.hashers import make_password, check_password
-from django.core.mail import send_mail
+from django.core.mail import send_mail, get_connection, EmailMessage
 from django.conf import settings
 
 from rest_framework import viewsets
@@ -40,8 +42,147 @@ from geopy.distance import geodesic
 
 from .authentication import CustomTokenAuthentication
 from . import models, serializers
+from .agent_views import register_agent, admin_list_pending_agents, admin_approve_agent, admin_reject_agent
 from .utils import fetch_product_image
 from .serializers import PaymentSerializer
+
+# --- Admin endpoints: list orders and update product stock
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_list_orders(request):
+    # only main admin (superuser) may view all orders
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    orders = models.Order.objects.select_related('user', 'delivery_address').all().order_by('-created_at')[:200]
+    data = []
+    for o in orders:
+        items = list(models.OrderItem.objects.filter(order=o).select_related('product', 'mart'))
+        data.append({
+            'order_id': o.order_id,
+            'user': o.user.username,
+            'total_cost': str(o.total_cost),
+            'status': o.status,
+            'items': [{'product_id': it.product.product_id, 'name': it.product.name, 'qty': it.quantity, 'price': str(it.price_at_purchase), 'mart': it.mart.name} for it in items],
+            'delivery_address': o.delivery_address_snapshot,
+            'created_at': o.created_at.isoformat(),
+        })
+    return Response({'orders': data})
+
+
+@api_view(["POST"])  # POST to update stock
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_update_stock(request):
+    # Allow main admin to update any product. Allow mart_admin users (is_staff but not superuser)
+    # to update only products that belong to marts they manage.
+    if not getattr(request.user, 'is_staff', False) and not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    data = request.data or {}
+    product_id = data.get('product_id')
+    stock = data.get('stock')
+    if product_id is None or stock is None:
+        return Response({'error': 'product_id and stock required'}, status=400)
+    try:
+        p = models.Product.objects.get(pk=product_id)
+        # If current user is not superuser, enforce mart ownership check
+        if not getattr(request.user, 'is_superuser', False):
+            # Try to match an Admin record to this user (by email or username)
+            admin_obj = None
+            try:
+                admin_obj = models.Admin.objects.filter(models.Q(email__iexact=getattr(request.user, 'email', '')) | models.Q(username__iexact=getattr(request.user, 'username', ''))).first()
+            except Exception:
+                admin_obj = None
+
+            if not admin_obj:
+                return Response({'error': 'Forbidden: not a recognized mart admin'}, status=403)
+
+            # Ensure the product's mart is managed by this admin
+            if not p.mart or getattr(p.mart, 'admin_id', None) != getattr(admin_obj, 'admin_id', None):
+                return Response({'error': 'Forbidden: cannot modify product from another mart'}, status=403)
+
+        p.stock = int(stock)
+        p.save(update_fields=['stock', 'updated_at'])
+        return Response({'success': True, 'product_id': p.product_id, 'stock': p.stock})
+    except models.Product.DoesNotExist:
+        return Response({'error': 'Product not found'}, status=404)
+
+
+# --- Delivery agent login
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def delivery_agent_login(request):
+    data = request.data or {}
+    email = data.get('email')
+    password = data.get('password')
+    if not email or not password:
+        return Response({'error': 'email and password required'}, status=400)
+    agent = models.DeliveryAgent.objects.filter(email__iexact=email).first()
+    # Agent must exist and be approved by admin before password login is allowed
+    if not agent or not agent.is_active or not getattr(agent, 'approved', False):
+        return Response({'error': 'Invalid credentials or not approved'}, status=401)
+    if not check_password(password, agent.password_hash):
+        return Response({'error': 'Invalid credentials'}, status=401)
+    # Credentials valid - create and send OTP immediately so agent receives code
+    try:
+        code = f"{random.randint(100000, 999999)}"
+        models.OTPCode.objects.create(destination=agent.email, code=code, purpose="login")
+        sent_via = "smtp"
+        try:
+            send_mail(
+                f"SAVR Login OTP",
+                f"Your OTP is {code}. It expires in 5 minutes.",
+                getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@savr.local"),
+                [agent.email],
+            )
+        except Exception as e:
+            # Log and return failure - require SMTP delivery for OTP
+            print(f"Agent OTP email failed: {e}, Code: {code}")
+            traceback.print_exc(file=sys.stdout)
+            return Response({'otp_sent': False, 'error': 'Failed to send OTP via email'}, status=502)
+
+        return Response({'message': 'Credentials validated. OTP sent.', 'destination': agent.email, 'sent_via': sent_via})
+    except Exception:
+        return Response({'message': 'Credentials validated. Proceed to OTP verification.', 'destination': agent.email})
+
+
+# --- Delivery partner password login (mirrors agent login but for DeliveryPartner)
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def delivery_partner_login(request):
+    data = request.data or {}
+    email = data.get('email')
+    password = data.get('password')
+    if not email or not password:
+        return Response({'error': 'email and password required'}, status=400)
+    partner = models.DeliveryPartner.objects.filter(email__iexact=email).first()
+    # Partner must exist and be approved by admin before password login is allowed
+    if not partner or not partner.approved or not getattr(partner, 'availability', True):
+        return Response({'error': 'Invalid credentials or not approved'}, status=401)
+    if not check_password(password, partner.password_hash or ''):
+        return Response({'error': 'Invalid credentials'}, status=401)
+    # Credentials valid - create and send OTP immediately so partner receives code
+    try:
+        code = f"{random.randint(100000, 999999)}"
+        models.OTPCode.objects.create(destination=partner.email, code=code, purpose="login")
+        sent_via = "smtp"
+        try:
+            send_mail(
+                f"SAVR Login OTP",
+                f"Your OTP is {code}. It expires in 5 minutes.",
+                getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@savr.local"),
+                [partner.email],
+            )
+        except Exception as e:
+            print(f"Partner OTP email failed: {e}, Code: {code}")
+            traceback.print_exc(file=sys.stdout)
+            return Response({'otp_sent': False, 'error': 'Failed to send OTP via email'}, status=502)
+    except Exception as e:
+        print(f"Partner OTP creation failed: {e}")
+        traceback.print_exc(file=sys.stdout)
+        return Response({'otp_sent': False, 'error': 'Internal error'}, status=500)
+
+    return Response({'otp_sent': True, 'destination': partner.email, 'sent_via': sent_via})
 
 STRIPE_SECRET_KEY = getattr(settings, "STRIPE_SECRET_KEY", os.environ.get("STRIPE_SECRET_KEY"))
 STRIPE_PUBLISHABLE_KEY = getattr(settings, "STRIPE_PUBLISHABLE_KEY", os.environ.get("STRIPE_PUBLISHABLE_KEY"))
@@ -180,6 +321,7 @@ def marts_with_distances_to(address_lat: Decimal, address_long: Decimal, marts: 
 
 # --------------------- Auth & User ---------------------
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def register(request):
     data = request.data or {}
     username = data.get("username")
@@ -210,6 +352,7 @@ def register(request):
 
 
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def login(request):
     data = request.data or {}
     email = data.get("email")
@@ -230,6 +373,7 @@ def login(request):
 
 
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def request_otp(request):
     data = request.data or {}
     destination = data.get("destination")
@@ -241,6 +385,7 @@ def request_otp(request):
     code = f"{random.randint(100000, 999999)}"
     models.OTPCode.objects.create(destination=destination, code=code, purpose=purpose)
 
+    sent_via = "smtp"
     try:
         send_mail(
             f"SAVR {purpose.capitalize()} OTP",
@@ -248,18 +393,30 @@ def request_otp(request):
             getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@savr.local"),
             [destination],
         )
+        # audit log for OTP send
+        try:
+            models.AnalyticsLog.objects.create(admin=None, action_type="otp_sent", details=json.dumps({"destination": destination, "purpose": purpose}))
+        except Exception:
+            pass
     except Exception as e:
+        # Print full traceback for debugging and return error to client.
         print(f"OTP email failed: {e}, Code: {code}")
+        traceback.print_exc(file=sys.stdout)
+        sent_via = "smtp_failed"
+        # Do not fallback to console: require SMTP delivery. Surface failure to client.
+        return Response({"otp_sent": False, "error": "Failed to send OTP via email"}, status=502)
 
-    return Response({"otp_sent": True, "destination": destination})
+    return Response({"otp_sent": True, "destination": destination, "sent_via": sent_via})
 
 
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def verify_otp(request):
     data = request.data or {}
     destination = data.get("destination")
     code = data.get("code")
     purpose = data.get("purpose", "login")
+    role = (data.get("role") or "user").lower()
 
     if not destination or not code:
         return Response({"error": "destination and code required"}, status=400)
@@ -277,19 +434,792 @@ def verify_otp(request):
     otp.used = True
     otp.save()
 
+    # Depending on role, issue appropriate token
+    if role in ("agent", "partner"):
+        partner = models.DeliveryPartner.objects.filter(email__iexact=destination, approved=True).first()
+        if not partner:
+            # audit failed verify
+            try:
+                models.AnalyticsLog.objects.create(admin=None, action_type="otp_verify_failed", details=json.dumps({"destination": destination, "purpose": purpose, "reason": "partner_not_found_or_unapproved"}))
+            except Exception:
+                pass
+            return Response({"error": "Partner not found or not approved"}, status=404)
+
+        # If frontend supplied a new_password during OTP verification, set it now (one-step onboarding)
+        new_password = request.data.get("new_password")
+        if new_password:
+            try:
+                if len(new_password) < 8:
+                    return Response({"error": "new_password must be at least 8 characters"}, status=400)
+                partner.password_hash = make_password(new_password)
+                partner.save(update_fields=["password_hash"])
+            except Exception:
+                pass
+
+        token_value = secrets.token_hex(32)
+        token_obj = models.DeliveryPartnerToken.objects.create(partner=partner, token_key=token_value)
+        resp = Response({
+            "verified": True,
+            "token": token_obj.token_key,
+            "partner_id": partner.partner_id,
+            "name": partner.name,
+            "role": "partner",
+        })
+        # Always set secure=False for dev/local
+        resp.set_cookie(
+    key=getattr(settings, "AUTH_COOKIE_NAME", "auth_token"),
+    value=token_obj.token_key,
+    httponly=True,
+    secure=False,  # for dev
+    samesite='Lax',
+    path="/",
+)
+        # audit successful partner verify
+        try:
+            models.AnalyticsLog.objects.create(admin=None, action_type="otp_verified", details=json.dumps({"destination": destination, "partner_id": partner.partner_id}))
+        except Exception:
+            pass
+        return resp
+
+    # default: user/admin -> create UserToken
     user = models.User.objects.filter(Q(email=destination) | Q(username=destination)).first()
     if not user:
         return Response({"error": "User not found"}, status=404)
 
+    if role == "admin" and not (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)):
+        return Response({"error": "Not an admin"}, status=403)
+
     token_value = secrets.token_hex(32)
     token_obj = models.UserToken.objects.create(user=user, token_key=token_value)
-
-    return Response({
+    role_out = "admin" if (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)) else "user"
+    resp = Response({
         "verified": True,
         "token": token_obj.token_key,
         "user_id": user.user_id,
         "username": user.username,
+        "role": role_out,
     })
+    resp.set_cookie(
+        key=getattr(settings, "AUTH_COOKIE_NAME", "auth_token"),
+        value=token_obj.token_key,
+        httponly=True,
+        secure=False,
+        samesite=getattr(settings, "AUTH_COOKIE_SAMESITE", "Lax"),
+        path="/",
+    )
+    return resp
+
+    token = UserToken.objects.create(user=user)
+    response = Response({"token": token.token_key})
+    response.set_cookie(
+    key="auth_token",
+    value=token.token_key,
+    httponly=True,
+    samesite="Lax",  # Use "None" if you ever switch to HTTPS
+    secure=False,    # Must be False on localhost dev
+)
+    return response
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def admin_login(request):
+    """
+    Admin login endpoint. Accepts JSON { email, password, remember_device? }
+    Returns { token, user: { user_id, username, email } } on success.
+    Logs attempt to AdminAuthAudit.
+    """
+    data = request.data or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+
+    ip = request.META.get("REMOTE_ADDR") or request.META.get("HTTP_X_FORWARDED_FOR")
+    ua = request.META.get("HTTP_USER_AGENT", "")
+
+    # find user
+    user = models.User.objects.filter(email__iexact=email).first()
+    outcome = "failed_invalid_credentials"
+
+    if not user:
+        try:
+            models.AdminAuthAudit.objects.create(user=None, email=email, ip_address=ip, user_agent=ua, outcome=outcome, reason="user not found")
+        except Exception:
+            pass
+        return Response({"error": "Invalid credentials."}, status=401)
+
+    # ensure admin/staff privileges
+    if not getattr(user, "is_staff", False) and not getattr(user, "is_superuser", False):
+        try:
+            models.AdminAuthAudit.objects.create(user=user, email=email, ip_address=ip, user_agent=ua, outcome="failed_not_admin", reason="user lacks admin privileges")
+        except Exception:
+            pass
+        return Response({"error": "Invalid credentials."}, status=401)
+
+    # verify password
+    if not check_password(password, user.password_hash):
+        try:
+            models.AdminAuthAudit.objects.create(user=user, email=email, ip_address=ip, user_agent=ua, outcome=outcome, reason="bad password")
+        except Exception:
+            pass
+        return Response({"error": "Invalid credentials."}, status=401)
+    # credentials valid - admin should proceed to OTP verification
+    outcome = "success_credentials"
+    try:
+        models.AdminAuthAudit.objects.create(user=user, email=email, ip_address=ip, user_agent=ua, outcome=outcome)
+    except Exception:
+        pass
+
+    # Create and send OTP immediately so admin receives code by email without needing a separate request
+    try:
+        code = f"{random.randint(100000, 999999)}"
+        models.OTPCode.objects.create(destination=user.email, code=code, purpose="login")
+        sent_via = "smtp"
+        try:
+            send_mail(
+                f"SAVR Login OTP",
+                f"Your OTP is {code}. It expires in 5 minutes.",
+                getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@savr.local"),
+                [user.email],
+            )
+        except Exception as e:
+            print(f"Admin OTP email failed: {e}, Code: {code}")
+            traceback.print_exc(file=sys.stdout)
+            return Response({"otp_sent": False, "error": "Failed to send OTP via email"}, status=502)
+        return Response({"message": "Credentials validated. OTP sent.", "destination": user.email, "sent_via": sent_via})
+    except Exception:
+        return Response({"message": "Credentials validated. Proceed to OTP verification.", "destination": user.email})
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def create_admin(request):
+    """
+    Create a new admin user. Only a main admin (superuser) may call this endpoint.
+    Body: { username, email, password, role } where role is one of ["main_admin","mart_admin"].
+    If a User with the email exists, it will be updated to is_staff and (optionally) is_superuser.
+    This endpoint is intended to be called by an existing superuser to bootstrap admins.
+    """
+    # Only superuser may create admins
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+
+    data = request.data or {}
+    username = (data.get('username') or '').strip()
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+    role = (data.get('role') or 'mart_admin').strip().lower()
+
+    if not username or not email or not password or role not in ('main_admin', 'mart_admin'):
+        return Response({'error': 'username, email, password and valid role required'}, status=400)
+
+    # Create or update a User record so admin can also use User-based login flows
+    user_obj = models.User.objects.filter(email__iexact=email).first()
+    if user_obj:
+        # update password and flags
+        user_obj.password_hash = make_password(password)
+        user_obj.is_staff = True
+        user_obj.is_superuser = True if role == 'main_admin' else False
+        user_obj.save(update_fields=['password_hash', 'is_staff', 'is_superuser', 'updated_at'])
+    else:
+        user_obj = models.User.objects.create(
+            username=username,
+            email=email,
+            password_hash=make_password(password),
+            is_staff=True,
+            is_superuser=True if role == 'main_admin' else False,
+        )
+
+    # Create Admin record (application-level Admin table) if not exists
+    admin_obj = models.Admin.objects.filter(username__iexact=username).first()
+    if admin_obj:
+        admin_obj.email = email
+        admin_obj.role = role
+        admin_obj.password_hash = user_obj.password_hash
+        admin_obj.save(update_fields=['email', 'role', 'password_hash', 'updated_at'])
+    else:
+        admin_obj = models.Admin.objects.create(
+            username=username,
+            email=email,
+            password_hash=user_obj.password_hash,
+            role=role,
+        )
+
+    return Response({'created': True, 'admin_id': admin_obj.admin_id, 'username': admin_obj.username, 'role': admin_obj.role})
+
+
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def list_admins(request):
+    # only main admin may list all admins
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    admins = models.Admin.objects.all().order_by('-created_at')
+    data = [{'admin_id': a.admin_id, 'username': a.username, 'email': a.email, 'role': a.role} for a in admins]
+    return Response({'admins': data})
+
+
+@api_view(["DELETE"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def delete_admin(request, admin_id):
+    # only main admin may delete admins
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    try:
+        a = models.Admin.objects.get(pk=admin_id)
+        a.delete()
+        return Response({'deleted': True})
+    except models.Admin.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def list_agents(request):
+    # superuser sees all agents; mart admins see agents linked to their mart if any
+    # Return DeliveryPartner records normalized into the legacy 'agents' shape for compatibility.
+    if getattr(request.user, 'is_superuser', False):
+        qs = models.DeliveryPartner.objects.all()
+    else:
+        # mart admin: find their mart(s) and partners associated (via partner->mart relation if any)
+        admin_obj = models.Admin.objects.filter(models.Q(email__iexact=getattr(request.user, 'email', '')) | models.Q(username__iexact=getattr(request.user, 'username', ''))).first()
+        if not admin_obj:
+            return Response({'error': 'Forbidden'}, status=403)
+        marts = models.Mart.objects.filter(admin=admin_obj)
+        # Partners may not be directly linked to marts; fall back to empty set if no partners mapped.
+        qs = models.DeliveryPartner.objects.filter(partner_id__in=[p.partner_id for p in models.DeliveryPartner.objects.all()])
+    data = []
+    for p in qs:
+        data.append({
+            'agent_id': p.partner_id,
+            'name': p.name,
+            'email': p.email,
+            'phone': p.phone,
+            'is_active': True,
+            'partner': {'partner_id': p.partner_id, 'name': p.name},
+        })
+    return Response({'agents': data})
+
+
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_list_partners(request):
+    # Only main admin may list partners
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    qs = models.DeliveryPartner.objects.all().order_by('name')
+    out = []
+    for p in qs:
+        out.append({'partner_id': p.partner_id, 'name': p.name, 'email': p.email, 'approved': p.approved})
+    return Response({'partners': out})
+
+
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_inspect_partner(request, partner_id):
+    """Admin utility: return counts of related objects for a DeliveryPartner to help debug delete failures."""
+    # Only staff may inspect
+    if not getattr(request.user, 'is_staff', False) and not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    try:
+        p = models.DeliveryPartner.objects.get(pk=partner_id)
+    except models.DeliveryPartner.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+    out = {
+        'partner_id': p.partner_id,
+        'name': p.name,
+        'email': p.email,
+        'deliveries_count': models.Delivery.objects.filter(partner=p).count(),
+        'agents_count': models.DeliveryAgent.objects.filter(partner=p).count(),
+        'partner_tokens_count': models.DeliveryPartnerToken.objects.filter(partner=p).count(),
+    }
+
+    # Try to find analytics logs that mention this partner id (simple string search in details)
+    try:
+        out['analytics_logs_count'] = models.AnalyticsLog.objects.filter(details__contains=f'"partner_id": {p.partner_id}').count()
+    except Exception:
+        out['analytics_logs_count'] = None
+
+    # Introspect related objects dynamically
+    rels = {}
+    for rel in p._meta.related_objects:
+        try:
+            accessor = rel.get_accessor_name()
+            qs = getattr(p, accessor).all()
+            rels[rel.related_model.__name__] = qs.count()
+        except Exception as e:
+            rels[rel.related_model.__name__] = str(e)
+    out['related_counts_by_model'] = rels
+
+    return Response(out)
+
+
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_list_deliveries(request):
+    # Only main admin may list all deliveries
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    # by default exclude already-delivered deliveries from the admin "Deliveries" view
+    include_delivered = str(request.GET.get('include_delivered', '')).lower() in ['1', 'true', 'yes']
+    qs = models.Delivery.objects.select_related('order', 'partner')
+    if not include_delivered:
+        qs = qs.exclude(status='delivered')
+    qs = qs.order_by('-created_at')[:500]
+    out = []
+    for d in qs:
+        out.append({
+            'delivery_id': d.delivery_id,
+            'order_id': d.order_id,
+            'status': d.status,
+            'partner': {'partner_id': d.partner.partner_id, 'name': d.partner.name} if d.partner else None,
+            'created_at': d.created_at.isoformat(),
+        })
+    return Response({'deliveries': out})
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_fix_delivery(request, delivery_id):
+    """Admin utility: fix a stuck delivery/order by forcing delivered and optionally auto-assign next.
+
+    Only superuser may call this endpoint.
+    Returns before/after snapshot and next_assigned_delivery_id when applicable.
+    """
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+
+    try:
+        d = models.Delivery.objects.select_related('order', 'partner').get(pk=delivery_id)
+    except models.Delivery.DoesNotExist:
+        return Response({'error': 'Not found'}, status=404)
+
+    before = {
+        'delivery_id': d.delivery_id,
+        'delivery_status': d.status,
+        'partner_id': d.partner_id,
+        'order_id': getattr(d.order, 'order_id', None),
+        'order_status': getattr(d.order, 'status', None),
+    }
+
+    next_assigned = None
+    try:
+        with transaction.atomic():
+            # Force delivery delivered
+            d.status = 'delivered'
+            d.save(update_fields=['status', 'updated_at'])
+
+            # Force associated order delivered
+            if d.order:
+                o = d.order
+                o.status = 'delivered'
+                o.save(update_fields=['status', 'updated_at'])
+
+            # If this delivery had a partner, try to auto-assign the next unassigned delivery to same partner
+            if d.partner:
+                next_qs = models.Delivery.objects.select_for_update(skip_locked=True).filter(partner__isnull=True).exclude(status='delivered').order_by('created_at')
+                next_d = next_qs.first()
+                if next_d:
+                    next_d.partner = d.partner
+                    next_d.status = 'assigned'
+                    next_d.save(update_fields=['partner', 'status', 'updated_at'])
+                    next_assigned = next_d.delivery_id
+
+    except Exception as e:
+        print(f"[admin_fix_delivery] failed for {delivery_id}: {e}")
+        traceback.print_exc(file=sys.stdout)
+        return Response({'error': 'Failed to fix delivery', 'details': str(e)}, status=500)
+
+    # Reload fresh state
+    d.refresh_from_db()
+    o_status = getattr(d.order, 'status', None)
+    after = {
+        'delivery_id': d.delivery_id,
+        'delivery_status': d.status,
+        'partner_id': d.partner_id,
+        'order_status': o_status,
+    }
+
+    resp = {'fixed': True, 'before': before, 'after': after}
+    if next_assigned:
+        resp['next_assigned_delivery_id'] = next_assigned
+    # audit log for admin repair
+    try:
+        admin_obj = models.Admin.objects.filter(models.Q(email__iexact=getattr(request.user, 'email', '')) | models.Q(username__iexact=getattr(request.user, 'username', ''))).first()
+        details = json.dumps({'delivery_id': d.delivery_id, 'admin_id': getattr(admin_obj, 'admin_id', None), 'next_assigned': next_assigned})
+        try:
+            models.AnalyticsLog.objects.create(admin=admin_obj, action_type='delivery_fixed', details=details)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return Response(resp)
+
+
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_list_logs(request):
+    """Return recent AnalyticsLog entries for auditing. Superuser only."""
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    qs = models.AnalyticsLog.objects.select_related('admin').order_by('-timestamp')[:500]
+    out = []
+    for l in qs:
+        out.append({
+            'log_id': l.log_id,
+            'action_type': l.action_type,
+            'details': l.details,
+            'admin': {'admin_id': l.admin.admin_id, 'username': l.admin.username} if l.admin else None,
+            'timestamp': l.timestamp.isoformat() if l.timestamp else None,
+        })
+    return Response({'logs': out})
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_assign_delivery(request, delivery_id):
+    # Only main admin may assign deliveries
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    data = request.data or {}
+    agent_id = data.get('agent_id')
+    partner_id = data.get('partner_id')
+    if not agent_id and not partner_id:
+        return Response({'error': 'agent_id or partner_id required'}, status=400)
+    try:
+        delivery = models.Delivery.objects.get(pk=delivery_id)
+    except models.Delivery.DoesNotExist:
+        return Response({'error': 'Delivery not found'}, status=404)
+    partner_obj = None
+    # If partner_id provided, prefer direct partner assignment
+    if partner_id:
+        try:
+            partner_obj = models.DeliveryPartner.objects.get(pk=partner_id)
+        except models.DeliveryPartner.DoesNotExist:
+            return Response({'error': 'Provided partner_id not found'}, status=404)
+        delivery.partner = partner_obj
+    else:
+        # agent_id provided: try legacy DeliveryAgent lookup first, then treat as partner id fallback
+        try:
+            agent = models.DeliveryAgent.objects.get(pk=agent_id)
+            if agent.partner:
+                delivery.partner = agent.partner
+            else:
+                # If agent exists but has no partner, require partner_id to be supplied
+                return Response({'error': 'Agent has no partner assigned. Provide partner_id in request.'}, status=400)
+        except models.DeliveryAgent.DoesNotExist:
+            # Maybe caller supplied a partner id in agent_id (migration case) — try partner lookup
+            try:
+                partner_obj = models.DeliveryPartner.objects.get(pk=agent_id)
+                delivery.partner = partner_obj
+            except models.DeliveryPartner.DoesNotExist:
+                return Response({'error': 'Agent not found (and no partner with that id)'}, status=404)
+    delivery.status = 'assigned'
+    delivery.save(update_fields=['partner', 'status', 'updated_at'])
+
+    try:
+        # Log whichever identifier we have: legacy agent or new partner
+        details = {'delivery_id': delivery.delivery_id}
+        try:
+            details['agent_id'] = agent.agent_id
+        except Exception:
+            pass
+        try:
+            if partner_obj:
+                details['partner_id'] = partner_obj.partner_id
+        except Exception:
+            pass
+        models.AnalyticsLog.objects.create(admin=None, action_type='delivery_assigned', details=json.dumps(details))
+    except Exception:
+        pass
+
+    # Build response with whichever identifier is available for compatibility
+    out = {'assigned': True, 'delivery_id': delivery.delivery_id}
+    try:
+        out['agent_id'] = agent.agent_id
+    except Exception:
+        pass
+    try:
+        if partner_obj:
+            out['partner_id'] = partner_obj.partner_id
+    except Exception:
+        pass
+    return Response(out)
+
+
+@api_view(["GET"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def agent_deliveries(request):
+    """
+    Returns deliveries assigned to the currently authenticated delivery agent.
+    """
+    # request.user may be a DeliveryAgent (monkey-patched in CustomTokenAuthentication)
+    user = request.user
+    # support both legacy DeliveryAgent and new DeliveryPartner authentication
+    if not (getattr(user, 'is_agent', False) or getattr(user, 'is_partner', False)):
+        return Response({'error': 'Forbidden'}, status=403)
+
+    # find deliveries where partner matches the authenticated partner
+    partner_obj = None
+    if getattr(user, 'is_partner', False):
+        partner_obj = user
+    else:
+        partner_obj = getattr(user, 'partner', None)
+    if not partner_obj:
+        return Response({'deliveries': []})
+    qs = models.Delivery.objects.filter(partner=partner_obj).order_by('-created_at')
+    data = []
+    for d in qs:
+        data.append({
+            'delivery_id': d.delivery_id,
+            'order_id': d.order_id,
+            'status': d.status,
+            'estimated_time': d.estimated_time,
+            'route_data': d.route_data,
+            'created_at': d.created_at,
+        })
+    return Response({'deliveries': data})
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def agent_mark_delivered(request, delivery_id):
+    """
+    Agent marks a delivery as delivered. Only allowed for agents assigned to the delivery partner.
+    Body: { actual_time_minutes?: int }
+    """
+    user = request.user
+    if not (getattr(user, 'is_agent', False) or getattr(user, 'is_partner', False)):
+        return Response({'error': 'Forbidden'}, status=403)
+
+    try:
+        d = models.Delivery.objects.get(pk=delivery_id)
+    except models.Delivery.DoesNotExist:
+        print(f"[agent_mark_delivered] Delivery not found: {delivery_id}")
+        return Response({'error': 'Not found'}, status=404)
+
+    print(f"[agent_mark_delivered] called by user={getattr(user, 'partner_id', getattr(user, 'agent_id', None))} for delivery={delivery_id} (current partner_id={getattr(d, 'partner_id', None)}, status={d.status})")
+
+    # ensure this authenticated partner/agent is assigned via partner
+    partner_obj = user if getattr(user, 'is_partner', False) else getattr(user, 'partner', None)
+    if not d.partner or d.partner_id != getattr(partner_obj, 'partner_id', None):
+        return Response({'error': 'Forbidden'}, status=403)
+
+    # mark delivered
+    d.status = 'delivered'
+    if request.data.get('actual_time') is not None:
+        try:
+            d.actual_time = int(request.data.get('actual_time'))
+        except Exception:
+            pass
+    try:
+        d.save(update_fields=['status', 'actual_time', 'updated_at'])
+    except Exception as e:
+        print(f"[agent_mark_delivered] failed to save delivery {delivery_id}: {e}")
+        traceback.print_exc(file=sys.stdout)
+        return Response({'error': 'Failed to update delivery', 'details': str(e)}, status=500)
+
+    # optionally update the associated order status
+    try:
+        o = d.order
+        if not o:
+            print(f"[agent_mark_delivered] delivery {delivery_id} has no associated order")
+        else:
+            o.status = 'delivered'
+            try:
+                o.save(update_fields=['status', 'updated_at'])
+            except Exception as e:
+                print(f"[agent_mark_delivered] failed to update order {getattr(o,'order_id', None)}: {e}")
+                traceback.print_exc(file=sys.stdout)
+    except Exception as e:
+        print(f"[agent_mark_delivered] unexpected error updating order for delivery {delivery_id}: {e}")
+        traceback.print_exc(file=sys.stdout)
+
+    # After marking delivered, try to auto-assign the next available delivery to this partner
+    # Audit log: record that this delivery was marked delivered
+    try:
+        try:
+            models.AnalyticsLog.objects.create(admin=None, action_type='delivery_delivered', details=json.dumps({'delivery_id': d.delivery_id, 'partner_id': getattr(partner_obj, 'partner_id', None), 'order_id': getattr(d.order, 'order_id', None)}))
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        partner_obj = partner_obj if 'partner_obj' in locals() and partner_obj is not None else (user if getattr(user, 'is_partner', False) else getattr(user, 'partner', None))
+        if partner_obj:
+            with transaction.atomic():
+                # pick the oldest unassigned delivery (partner is null) that is not delivered
+                next_qs = models.Delivery.objects.select_for_update(skip_locked=True).filter(partner__isnull=True).exclude(status='delivered').order_by('created_at')
+                next_d = next_qs.first()
+                if next_d:
+                    next_d.partner = partner_obj
+                    next_d.status = 'assigned'
+                    next_d.save(update_fields=['partner', 'status', 'updated_at'])
+                    try:
+                        models.AnalyticsLog.objects.create(admin=None, action_type='delivery_auto_assigned', details=json.dumps({'delivery_id': next_d.delivery_id, 'partner_id': partner_obj.partner_id}))
+                    except Exception:
+                        pass
+                    return Response({'marked': True, 'next_assigned_delivery_id': next_d.delivery_id})
+    except Exception as e:
+        # don't fail the main action if auto-assign fails
+        print(f"[agent_mark_delivered] auto-assign failed: {e}")
+
+    return Response({'marked': True})
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def create_agent(request):
+    # Admin-side creation of agents is disabled to enforce self-registration + admin approval.
+    # Use POST /api/v1/agents/register/ for agent sign-up. Admins may approve via admin endpoints.
+    return Response({'error': 'Admin-side agent creation disabled. Use /api/v1/agents/register/ and admin approval endpoints.'}, status=403)
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def admin_resend_agent_otp(request):
+    """Admin-only: resend onboarding/login OTP to an agent by agent_id."""
+    # Only staff (superuser or mart_admin) may call
+    if not getattr(request.user, 'is_staff', False):
+        return Response({'error': 'Forbidden'}, status=403)
+
+    data = request.data or {}
+    partner_id = data.get('partner_id') or data.get('agent_id')
+    if not partner_id:
+        return Response({'error': 'partner_id required'}, status=400)
+
+    try:
+        p = models.DeliveryPartner.objects.get(pk=partner_id)
+    except models.DeliveryPartner.DoesNotExist:
+        return Response({'error': 'Partner not found'}, status=404)
+
+    # Create OTP and send
+    try:
+        code = f"{random.randint(100000, 999999)}"
+        models.OTPCode.objects.create(destination=p.email or '', code=code, purpose="login")
+        try:
+            if p.email:
+                send_mail(
+                    "SAVR Partner OTP",
+                    f"Hello {p.name},\n\nUse this OTP to sign in as a SAVR delivery partner: {code}\nIt expires in 5 minutes.",
+                    getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@savr.local"),
+                    [p.email],
+                )
+        except Exception as e:
+            print(f"[admin_resend_agent_otp] failed to send OTP to {p.email}: {e}")
+            traceback.print_exc(file=sys.stdout)
+            return Response({'otp_sent': False, 'error': 'Failed to send OTP via email'}, status=502)
+
+        return Response({'otp_sent': True, 'destination': p.email})
+    except Exception as e:
+        print(f"[admin_resend_agent_otp] error: {e}")
+        traceback.print_exc(file=sys.stdout)
+        return Response({'otp_sent': False, 'error': 'Internal error'}, status=500)
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def agent_set_password(request):
+    """Authenticated delivery agent may set/change their password.
+
+    Requires the agent to be authenticated (DeliveryAgentToken cookie or header).
+    Body: { "new_password": "..." }
+    """
+    user = request.user
+    if not (getattr(user, 'is_agent', False) or getattr(user, 'is_partner', False)):
+        return Response({'error': 'Forbidden'}, status=403)
+
+    data = request.data or {}
+    new_password = data.get('new_password') or ''
+    if not new_password or len(new_password) < 8:
+        return Response({'error': 'new_password required and must be at least 8 characters'}, status=400)
+
+    try:
+        # Update password using Django's hashing
+        user.password_hash = make_password(new_password)
+        user.save(update_fields=['password_hash'])
+        return Response({'changed': True})
+    except Exception as e:
+        print(f"[agent_set_password] failed to set password for user {getattr(user, 'agent_id', getattr(user, 'partner_id', None))}: {e}")
+        traceback.print_exc(file=sys.stdout)
+        return Response({'error': 'Failed to set password'}, status=500)
+
+
+@api_view(["DELETE"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def delete_agent(request, agent_id):
+    # superuser or mart admin may delete agents; mart admin only for their mart
+    if not getattr(request.user, 'is_staff', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    # support deleting partners (new) or legacy agents
+    target = None
+    try:
+        target = models.DeliveryAgent.objects.get(pk=agent_id)
+        legacy = True
+    except models.DeliveryAgent.DoesNotExist:
+        try:
+            target = models.DeliveryPartner.objects.get(pk=agent_id)
+            legacy = False
+        except models.DeliveryPartner.DoesNotExist:
+            return Response({'error': 'Not found'}, status=404)
+
+    if not getattr(request.user, 'is_superuser', False):
+        admin_obj = models.Admin.objects.filter(models.Q(email__iexact=getattr(request.user, 'email', '')) | models.Q(username__iexact=getattr(request.user, 'username', ''))).first()
+        if not admin_obj:
+            return Response({'error': 'Forbidden'}, status=403)
+        # for legacy agent, the partner->mart check applies; for partner, no mart relation so deny non-superuser
+        if legacy:
+            if not target.partner or target.partner.mart_id not in [m.mart_id for m in models.Mart.objects.filter(admin=admin_obj)]:
+                return Response({'error': 'Forbidden'}, status=403)
+        else:
+            return Response({'error': 'Forbidden'}, status=403)
+
+    try:
+        target.delete()
+        return Response({'deleted': True})
+    except Exception as e:
+        # Log and return error details to help admins debug why deletion failed (e.g., DB constraints, signal errors)
+        print(f"[delete_agent] failed to delete target {agent_id}: {e}")
+        traceback.print_exc(file=sys.stdout)
+        return Response({'error': 'Failed to delete target', 'details': str(e)}, status=500)
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def assign_mart_to_admin(request):
+    # main admin only: assign an Admin user to a Mart
+    if not getattr(request.user, 'is_superuser', False):
+        return Response({'error': 'Forbidden'}, status=403)
+    data = request.data or {}
+    admin_id = data.get('admin_id')
+    mart_id = data.get('mart_id')
+    if not admin_id or not mart_id:
+        return Response({'error': 'admin_id and mart_id required'}, status=400)
+    try:
+        admin_obj = models.Admin.objects.get(pk=admin_id)
+        mart = models.Mart.objects.get(pk=mart_id)
+    except (models.Admin.DoesNotExist, models.Mart.DoesNotExist):
+        return Response({'error': 'Not found'}, status=404)
+    mart.admin = admin_obj
+    mart.save(update_fields=['admin', 'updated_at'])
+    return Response({'assigned': True})
 
 # --- Forgot / Reset Password ---
 def _six_digit_code():
@@ -297,6 +1227,7 @@ def _six_digit_code():
     return f"{secrets.randbelow(1_000_000):06d}"
 
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def forgot_password(request):
     """
     Body: { "email": "user@example.com" }
@@ -317,6 +1248,7 @@ def forgot_password(request):
         fe_base = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
         reset_link = f"{fe_base}/reset-password/{code}"
 
+        sent_via = "smtp"
         try:
             send_mail(
                 "SAVR Password Reset",
@@ -327,12 +1259,15 @@ def forgot_password(request):
                 [email],
             )
         except Exception as e:
-            # Don’t hard-fail the API if email transport has issues
-            print(f"[forgot_password] send_mail failed: {e}")
+            print(f"[forgot_password] send_mail failed: {e}, Code: {code}")
+            traceback.print_exc(file=sys.stdout)
+            return Response({"sent": False, "error": "Failed to send password reset email"}, status=502)
 
     return Response({"sent": True})
 
+
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def reset_password(request):
     """
     Body: { "token": "<6-digit-code>", "new_password": "..." }
@@ -375,6 +1310,28 @@ def reset_password(request):
 @permission_classes([IsAuthenticated])
 def me(request):
     user = request.user
+
+    # If authenticated as a delivery partner (new flow) or legacy delivery agent
+    if getattr(user, 'is_partner', False):
+        return Response({
+            "partner_id": user.partner_id,
+            "name": user.name,
+            "email": user.email,
+            "phone": getattr(user, 'phone', None),
+            "role": "partner",
+        })
+    if getattr(user, 'is_agent', False):
+        partner_id = getattr(user.partner, 'partner_id', None) if getattr(user, 'partner', None) else None
+        return Response({
+            "agent_id": user.agent_id,
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "partner_id": partner_id,
+            "role": "agent",
+        })
+
+    # Otherwise treat as normal User/Admin
     default_addr = (
         models.Address.objects.filter(user=user, is_default=True).first()
         or models.Address.objects.filter(user=user).order_by("-updated_at").first()
@@ -398,9 +1355,120 @@ def me(request):
         "username": user.username,
         "email": user.email,
         "contact_number": user.contact_number,
+        "is_staff": getattr(user, 'is_staff', False),
+        "is_superuser": getattr(user, 'is_superuser', False),
         "default_address": addr_payload,
     })
 
+
+# Dev-only: echo request cookies and key headers so we can debug cookie behavior locally
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def debug_cookies(request):
+    # Only enable on DEBUG to avoid exposing headers in production
+    try:
+        from django.conf import settings as _settings
+        if not getattr(_settings, 'DEBUG', False):
+            return Response({'error': 'Not available'}, status=404)
+    except Exception:
+        pass
+
+    data = {
+        'cookies': request.COOKIES,
+        'origin': request.META.get('HTTP_ORIGIN'),
+        'cookie_header': request.META.get('HTTP_COOKIE'),
+        'authorization': request.META.get('HTTP_AUTHORIZATION'),
+        'user_agent': request.META.get('HTTP_USER_AGENT'),
+    }
+    return Response(data)
+
+
+@api_view(["POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def logout(request):
+    # If the token is a UserToken and present in header, delete it. Also clear cookie.
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    token_key = None
+    if auth_header.startswith('Token '):
+        token_key = auth_header.split(' ', 1)[1].strip()
+    # attempt delete user token
+    try:
+        if token_key:
+            models.UserToken.objects.filter(token_key=token_key).delete()
+    except Exception:
+        pass
+
+    resp = Response({"logout": True})
+    # Clear cookie
+    resp.delete_cookie(getattr(settings, "AUTH_COOKIE_NAME", "auth_token"), path='/')
+    return resp
+
+
+# --------------------- Address Management ---------------------
+@api_view(["GET", "POST"])
+@authentication_classes([CustomTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def addresses(request):
+    user = request.user
+
+    if request.method == "GET":
+        addrs = models.Address.objects.filter(user=user).order_by("-is_default", "-updated_at")
+        return Response(serializers.AddressSerializer(addrs, many=True).data)
+
+    # POST
+    data = request.data or {}
+    # Accept either a textual address (line1) or explicit coordinates from client
+    if not data.get("line1") and not (data.get("location_lat") and data.get("location_long")):
+        return Response({"error": "line1 or location_lat/location_long is required"}, status=400)
+
+    # Prefer client-supplied coords when present (skip server geocoding)
+    lat = None
+    lng = None
+    if data.get("location_lat") is not None and data.get("location_long") is not None:
+        try:
+            lat = data.get("location_lat")
+            lng = data.get("location_long")
+        except Exception:
+            lat, lng = None, None
+
+    # If we don't have coords yet, validate + try geocoding the assembled address
+    if lat is None or lng is None:
+        pin = (data.get("pincode") or "").strip()
+        if not pin or not re.fullmatch(r"\d{6}", str(pin)):
+            return Response({"error": "Valid 6-digit pincode required"}, status=400)
+
+        full = ", ".join(filter(None, [
+            data.get("line1"), data.get("line2"),
+            data.get("city") or "Visakhapatnam",
+            data.get("state") or "Andhra Pradesh",
+            pin,
+        ]))
+        if full:
+            lat, lng = get_lat_long_from_address(full)
+
+    addr = models.Address.objects.create(
+        user=user,
+        label=data.get("label"),
+        contact_name=data.get("contact_name"),
+        contact_phone=data.get("contact_phone"),
+        line1=data.get("line1") or '',
+        line2=data.get("line2"),
+        city=data.get("city", "Visakhapatnam"),
+        state=data.get("state", "Andhra Pradesh"),
+        pincode=data.get("pincode"),
+        location_lat=lat,
+        location_long=lng,
+        is_default=bool(data.get("is_default", False)),
+        instructions=data.get("instructions"),
+    )
+    # ensure only one default
+    if addr.is_default or models.Address.objects.filter(user=user).count() == 1:
+        models.Address.objects.filter(user=user).exclude(pk=addr.pk).update(is_default=False)
+        addr.is_default = True
+        addr.save(update_fields=["is_default"])
+
+    return Response(serializers.AddressSerializer(addr).data, status=201)
 
 # --------------------- Address Management ---------------------
 @api_view(["GET", "POST"])
@@ -926,6 +1994,9 @@ def create_order(request):
                     total_cost = Decimal(str(explicit_amount))
                 except Exception:
                     pass
+
+
+            # (admin_login was previously mistakenly nested here; moved to top-level after verify_otp)
 
             # choose nearest approved mart among candidate marts; fallback to any approved mart
             candidate_marts = models.Mart.objects.filter(mart_id__in=list(marts_in_order), approved=True)

@@ -19,6 +19,10 @@ class User(models.Model):
     address = models.TextField(null=True, blank=True)
     contact_number = models.CharField(max_length=20, null=True, blank=True)
 
+    # Admin flags for permission checks (default False)
+    is_staff = models.BooleanField(default=False)
+    is_superuser = models.BooleanField(default=False)
+
     location_lat = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True, db_index=True)
     location_long = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True, db_index=True)
     preferences = models.JSONField(null=True, blank=True)
@@ -68,6 +72,9 @@ class Mart(models.Model):
 
     def __str__(self):
         return self.name
+
+
+
 
 # ---------------------- Address ----------------------
 _pin_validator = RegexValidator(regex=r"^\d{6}$", message="PIN code must be a 6-digit number.")
@@ -239,6 +246,8 @@ class DeliveryPartner(models.Model):
     partner_id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=100)
     email = models.EmailField(max_length=254, unique=True, null=True, blank=True)
+    phone = models.CharField(max_length=20, null=True, blank=True)
+    password_hash = models.CharField(max_length=255, null=True, blank=True)
     location_lat = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
     location_long = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
     availability = models.BooleanField(default=True)
@@ -274,6 +283,54 @@ class Delivery(models.Model):
     def __str__(self):
         return f"Delivery {self.delivery_id} ({self.status})"
 
+
+# ---------------------- Delivery Agent (auth) ----------------------
+class DeliveryAgent(models.Model):
+    agent_id = models.AutoField(primary_key=True)
+    partner = models.ForeignKey(DeliveryPartner, null=True, blank=True, on_delete=models.SET_NULL, db_column='partner_id')
+    name = models.CharField(max_length=100)
+    email = models.EmailField(max_length=254, unique=True, null=True, blank=True)
+    phone = models.CharField(max_length=20, null=True, blank=True)
+    password_hash = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+    # Whether an admin has approved this agent for access. New registrations start as False.
+    approved = models.BooleanField(default=False)
+    location_lat = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
+    location_long = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'delivery_agents'
+
+    def __str__(self):
+        return f"Agent {self.agent_id} {self.name}"
+
+
+class DeliveryAgentToken(models.Model):
+    token_id = models.BigAutoField(primary_key=True)
+    agent = models.ForeignKey(DeliveryAgent, on_delete=models.CASCADE, db_column='agent_id', related_name='tokens')
+    token_key = models.CharField(max_length=128, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'delivery_agent_tokens'
+
+    def __str__(self):
+        return f"AgentToken {self.token_id} {self.agent_id}"
+
+
+class DeliveryPartnerToken(models.Model):
+    token_id = models.BigAutoField(primary_key=True)
+    partner = models.ForeignKey('DeliveryPartner', on_delete=models.CASCADE, db_column='partner_id', related_name='tokens')
+    token_key = models.CharField(max_length=128, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'delivery_partner_tokens'
+
+    def __str__(self):
+        return f"PartnerToken {self.token_id} {self.partner_id}"
+
 # ---------------------- Analytics ----------------------
 class AnalyticsLog(models.Model):
     log_id = models.AutoField(primary_key=True)
@@ -287,6 +344,24 @@ class AnalyticsLog(models.Model):
 
     def __str__(self):
         return f"Log {self.log_id} by {self.admin}"
+
+
+class AdminAuthAudit(models.Model):
+    """Record admin auth attempts for auditing and monitoring."""
+    audit_id = models.AutoField(primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, db_column='user_id')
+    email = models.CharField(max_length=254, null=True, blank=True)
+    ip_address = models.CharField(max_length=100, null=True, blank=True)
+    user_agent = models.TextField(null=True, blank=True)
+    outcome = models.CharField(max_length=50)
+    reason = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "admin_auth_audit"
+
+    def __str__(self):
+        return f"AdminAuthAudit {self.audit_id} {self.email} {self.outcome}"
 
 # ---------------------- OTP ----------------------
 class OTPCode(models.Model):
